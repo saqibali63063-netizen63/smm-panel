@@ -20,27 +20,33 @@ export interface Category {
   id: number;
   name: string;
   icon: string;
+  image_url?: string | null;
+  description?: string;
   sort_order: number;
   status: string;
+  service_count?: number;
 }
 
 export interface Service {
   id: number;
   category_id: number;
   category_name?: string;
+  category_sort?: number;
   name: string;
   type: string;
   rate_per_1000: number;
   min_quantity: number;
   max_quantity: number;
   description: string;
-  provider_id?: number;
-  provider_service_id?: string;
+  provider_id?: number | null;
+  provider_name?: string;
+  provider_service_id?: string | null;
   refill_supported: number;
   cancel_supported: number;
   dripfeed_supported?: number;
   status: string;
 }
+
 
 export interface Order {
   id: number;

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { api } from '../../lib/api.ts';
 import type { Category, Service } from '../../types/index.ts';
+import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
 import {
   PlusCircle,
   Zap,
@@ -226,9 +227,51 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
             
             {/* Category selection */}
             <div>
-              <label className="block text-slate-300 font-semibold mb-1.5">
-                1. Select Social Platform Category
-              </label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-slate-300 font-semibold">
+                  1. Select Social Platform Category
+                </label>
+                {currentCategory && (
+                  <span className="flex items-center gap-1.5 text-xs text-sky-400 font-medium">
+                    <CategoryIconBadge
+                      categoryName={currentCategory.name}
+                      imageUrl={currentCategory.image_url}
+                      icon={currentCategory.icon}
+                      size="xs"
+                    />
+                    <span>{currentCategory.name}</span>
+                  </span>
+                )}
+              </div>
+
+              {/* Horizontal Scrollable Category Badges */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-2 mb-2.5 scrollbar-none">
+                {categories.map(c => {
+                  const isSelected = c.id === selectedCatId;
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => handleCategoryChange(c.id)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border shrink-0 cursor-pointer ${
+                        isSelected
+                          ? 'bg-sky-500/20 border-sky-500 text-white shadow-md shadow-sky-500/20'
+                          : 'bg-[#070b16] border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                      }`}
+                    >
+                      <CategoryIconBadge
+                        categoryName={c.name}
+                        imageUrl={c.image_url}
+                        icon={c.icon}
+                        size="xs"
+                      />
+                      <span>{c.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Category Dropdown (fully synced) */}
               <select
                 value={selectedCatId}
                 onChange={(e) => handleCategoryChange(Number(e.target.value))}

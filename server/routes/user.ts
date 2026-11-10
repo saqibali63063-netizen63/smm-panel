@@ -308,11 +308,16 @@ userRouter.get('/orders', requireAuth, (req: AuthRequest, res: Response) => {
   const search = (req.query.search || '').toString().trim().toLowerCase();
 
   let query = `
-    SELECT o.*, s.name as service_name, c.name as category_name, s.refill_supported, s.cancel_supported
+    SELECT o.*, 
+           COALESCE(s.name, 'Service #' || o.service_id) as service_name, 
+           COALESCE(c.name, 'General') as category_name, 
+           COALESCE(s.refill_supported, 0) as refill_supported, 
+           COALESCE(s.cancel_supported, 0) as cancel_supported
     FROM orders o
-    JOIN services s ON o.service_id = s.id
-    JOIN categories c ON s.category_id = c.id
+    LEFT JOIN services s ON o.service_id = s.id
+    LEFT JOIN categories c ON s.category_id = c.id
     WHERE o.user_id = ?
+
   `;
   const params: any[] = [userId];
 

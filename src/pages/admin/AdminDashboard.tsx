@@ -53,7 +53,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => onNavigate('admin-categories')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
+          >
+            <span>Categories</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate('admin-services')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
+          >
+            <span>Services</span>
+          </button>
+
           {overview?.pending_payments && overview.pending_payments > 0 ? (
             <button
               onClick={() => onNavigate('admin-payments')}

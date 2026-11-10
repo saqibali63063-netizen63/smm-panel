@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { initDb } from './server/db.js';
+import { initDb, getUploadsDirectory } from './server/db.js';
 import { userRouter } from './server/routes/user.js';
 import { adminRouter } from './server/routes/admin.js';
 import { apiV2Router } from './server/routes/api-v2.js';
@@ -24,9 +24,20 @@ async function startServer() {
   initDb();
   console.log('✅ SQLite database initialized and pre-seeded.');
 
+  // Serve static uploaded files (category icons & receipts)
+  try {
+    const uploadsCategoryDir = getUploadsDirectory();
+    const uploadsBase = path.dirname(uploadsCategoryDir);
+    app.use('/uploads', express.static(uploadsBase));
+    app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
+  } catch (e) {
+    console.warn('Could not bind uploads directory:', e);
+  }
+
   // JSON and URL-encoded parsing (allow larger payload for receipt screenshot base64)
   app.use(express.json({ limit: '15mb' }));
   app.use(express.urlencoded({ extended: true, limit: '15mb' }));
+
 
   // Mount API routers
   // Standard Reseller API v2: /api/v2

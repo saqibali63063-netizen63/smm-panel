@@ -38,6 +38,7 @@ import { ProfileSettingsPage } from './pages/dashboard/ProfileSettingsPage.tsx';
 import { AdminDashboard } from './pages/admin/AdminDashboard.tsx';
 import { AdminUsersPage } from './pages/admin/AdminUsersPage.tsx';
 import { AdminOrdersPage } from './pages/admin/AdminOrdersPage.tsx';
+import { AdminCategoriesPage } from './pages/admin/AdminCategoriesPage.tsx';
 import { AdminServicesPage } from './pages/admin/AdminServicesPage.tsx';
 import { AdminPaymentsPage } from './pages/admin/AdminPaymentsPage.tsx';
 import { AdminTicketsPage } from './pages/admin/AdminTicketsPage.tsx';
@@ -137,6 +138,7 @@ function AppContent() {
         {currentView === 'admin-overview' && <AdminDashboard onNavigate={navigate} />}
         {currentView === 'admin-users' && <AdminUsersPage onNavigate={navigate} />}
         {currentView === 'admin-orders' && <AdminOrdersPage onNavigate={navigate} />}
+        {currentView === 'admin-categories' && <AdminCategoriesPage onNavigate={navigate} />}
         {currentView === 'admin-services' && <AdminServicesPage onNavigate={navigate} />}
         {currentView === 'admin-payments' && <AdminPaymentsPage onNavigate={navigate} />}
         {currentView === 'admin-tickets' && <AdminTicketsPage onNavigate={navigate} />}

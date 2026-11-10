@@ -270,7 +270,10 @@ export const api = {
         body: JSON.stringify(body)
       }),
 
-    createCategory: (body: { name: string; icon: string; sort_order: number }) =>
+    getCategories: () =>
+      apiRequest<{ categories: Category[] }>('/api/admin/categories'),
+
+    createCategory: (body: { name: string; icon?: string; image_url?: string | null; description?: string; sort_order?: number; status?: string }) =>
       apiRequest<{ success: boolean; id: number; message: string }>('/api/admin/categories', {
         method: 'POST',
         body: JSON.stringify(body)
@@ -282,10 +285,25 @@ export const api = {
         body: JSON.stringify(body)
       }),
 
-    deleteCategory: (id: number) =>
-      apiRequest<{ success: boolean; message: string }>(`/api/admin/categories/${id}`, {
+    deleteCategory: (id: number, force: boolean = false) =>
+      apiRequest<{ success: boolean; message: string }>(`/api/admin/categories/${id}${force ? '?force=true' : ''}`, {
         method: 'DELETE'
       }),
+
+    reorderCategories: (order: Array<{ id: number; sort_order: number }> | number[]) =>
+      apiRequest<{ success: boolean; message: string }>('/api/admin/categories/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ order })
+      }),
+
+    uploadCategoryIcon: (image_data: string, filename?: string) =>
+      apiRequest<{ success: boolean; url: string; message: string }>('/api/admin/categories/upload-icon', {
+        method: 'POST',
+        body: JSON.stringify({ image_data, filename })
+      }),
+
+    getAdminServices: () =>
+      apiRequest<{ services: Service[]; categories: Category[] }>('/api/admin/services'),
 
     createService: (body: any) =>
       apiRequest<{ success: boolean; id: number; message: string }>('/api/admin/services', {
@@ -294,7 +312,7 @@ export const api = {
       }),
 
     updateService: (id: number, body: Partial<Service>) =>
-      apiRequest<{ success: boolean; message: string }>(`/api/admin/services/${id}`, {
+      apiRequest<{ success: boolean; message: string; service?: Service }>(`/api/admin/services/${id}`, {
         method: 'PUT',
         body: JSON.stringify(body)
       }),
@@ -303,6 +321,31 @@ export const api = {
       apiRequest<{ success: boolean; message: string }>(`/api/admin/services/${id}`, {
         method: 'DELETE'
       }),
+
+    bulkUpdateServiceStatus: (ids: number[], status: 'active' | 'inactive') =>
+      apiRequest<{ success: boolean; message: string }>('/api/admin/services/bulk-status', {
+        method: 'POST',
+        body: JSON.stringify({ ids, status })
+      }),
+
+    bulkUpdateServiceCategory: (ids: number[], category_id: number) =>
+      apiRequest<{ success: boolean; message: string }>('/api/admin/services/bulk-category', {
+        method: 'POST',
+        body: JSON.stringify({ ids, category_id })
+      }),
+
+    bulkDeleteServices: (ids: number[]) =>
+      apiRequest<{ success: boolean; message: string }>('/api/admin/services/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({ ids })
+      }),
+
+    deleteAllServices: (confirmation: string) =>
+      apiRequest<{ success: boolean; message: string }>('/api/admin/services/delete-all', {
+        method: 'POST',
+        body: JSON.stringify({ confirmation })
+      }),
+
 
     getPayments: (filters?: { status?: string; method?: string; network?: string } | string) => {
       let query = '';

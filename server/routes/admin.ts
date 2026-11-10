@@ -9,9 +9,11 @@ import {
   createDatabaseBackup,
   listDatabaseBackups,
   exportDatabaseJson,
-  getBackupsDirectory
+  getBackupsDirectory,
+  getUploadsDirectory
 } from '../db.js';
 import { requireAdmin, type AuthRequest } from '../auth.js';
+
 
 
 export const adminRouter = Router();
@@ -177,11 +179,14 @@ adminRouter.get('/orders', (req: AuthRequest, res: Response) => {
   const search = (req.query.search || '').toString().trim().toLowerCase();
 
   let query = `
-    SELECT o.*, u.username, u.email, s.name as service_name, c.name as category_name
+    SELECT o.*, u.username, u.email, 
+           COALESCE(s.name, 'Service #' || o.service_id) as service_name, 
+           COALESCE(c.name, 'General') as category_name
     FROM orders o
     JOIN users u ON o.user_id = u.id
-    JOIN services s ON o.service_id = s.id
-    JOIN categories c ON s.category_id = c.id
+    LEFT JOIN services s ON o.service_id = s.id
+    LEFT JOIN categories c ON s.category_id = c.id
+
   `;
   const params: any[] = [];
   const conditions: string[] = [];
@@ -266,119 +271,520 @@ adminRouter.put('/orders/:id/status', (req: AuthRequest, res: Response) => {
 // CATEGORY & SERVICE MANAGEMENT
 // ==========================================
 
+// ==========================================
+// CATEGORY MANAGEMENT
+// ==========================================
+
+// Get all categories with service counts (ordered by sort_order)
+adminRouter.get('/categories', (req: AuthRequest, res: Response) => {
+  const categories = db.prepare(`
+    SELECT c.*, COUNT(s.id) as service_count
+    FROM categories c
+    LEFT JOIN services s ON s.category_id = c.id
+    GROUP BY c.id
+    ORDER BY c.sort_order ASC, c.id ASC
+  `).all() as any[];
+  return res.json({ categories });
+});
+
 // Add Category
 adminRouter.post('/categories', (req: AuthRequest, res: Response) => {
-  const { name, icon, sort_order } = req.body;
-  if (!name) return res.status(400).json({ error: 'Category name is required.' });
+  const { name, icon, image_url, description, sort_order, status } = req.body;
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Category name is required.' });
+  }
 
-  const resCat = db.prepare(`
-    INSERT INTO categories (name, icon, sort_order, status)
-    VALUES (?, ?, ?, 'active')
-  `).run(name.trim(), icon || 'Globe', Number(sort_order) || 0);
+  // Determine sort order
+  let finalSort = Number(sort_order);
+  if (isNaN(finalSort)) {
+    const maxSort = db.prepare('SELECT MAX(sort_order) as max_sort FROM categories').get() as any;
+    finalSort = (maxSort?.max_sort || 0) + 1;
+  }
 
-  logAudit(req.user!.id, 'create_category', 'category', String(resCat.lastInsertRowid), `Created category ${name}`);
-  return res.status(201).json({ success: true, id: Number(resCat.lastInsertRowid), message: 'Category created' });
+  try {
+    const resCat = db.prepare(`
+      INSERT INTO categories (name, icon, image_url, description, sort_order, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      String(name).trim(),
+      icon ? String(icon).trim() : 'Globe',
+      image_url ? String(image_url).trim() : null,
+      description ? String(description).trim() : '',
+      finalSort,
+      status === 'inactive' ? 'inactive' : 'active'
+    );
+
+    const newId = Number(resCat.lastInsertRowid);
+    logAudit(req.user!.id, 'create_category', 'category', String(newId), `Created category "${name.trim()}"`);
+    return res.status(201).json({ success: true, id: newId, message: 'Category created successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to create category: ' + err.message });
+  }
 });
 
 // Update Category
 adminRouter.put('/categories/:id', (req: AuthRequest, res: Response) => {
   const id = parseInt(req.params.id, 10);
-  const { name, icon, sort_order, status } = req.body;
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid category ID.' });
 
-  db.prepare(`
-    UPDATE categories
-    SET name = COALESCE(?, name),
-        icon = COALESCE(?, icon),
-        sort_order = COALESCE(?, sort_order),
-        status = COALESCE(?, status)
-    WHERE id = ?
-  `).run(name || null, icon || null, sort_order !== undefined ? Number(sort_order) : null, status || null, id);
+  const existing = db.prepare('SELECT * FROM categories WHERE id = ?').get(id) as any;
+  if (!existing) return res.status(404).json({ error: 'Category not found.' });
 
-  return res.json({ success: true, message: 'Category updated' });
+  const { name, icon, image_url, description, sort_order, status } = req.body;
+
+  if (name !== undefined && !String(name).trim()) {
+    return res.status(400).json({ error: 'Category name cannot be empty.' });
+  }
+
+  const finalName = name !== undefined ? String(name).trim() : existing.name;
+  const finalIcon = icon !== undefined ? String(icon).trim() : existing.icon;
+  const finalImage = image_url !== undefined ? (image_url ? String(image_url).trim() : null) : existing.image_url;
+  const finalDesc = description !== undefined ? String(description).trim() : (existing.description || '');
+  const finalSort = sort_order !== undefined ? Number(sort_order) : existing.sort_order;
+  const finalStatus = status !== undefined ? String(status) : existing.status;
+
+  try {
+    db.prepare(`
+      UPDATE categories
+      SET name = ?,
+          icon = ?,
+          image_url = ?,
+          description = ?,
+          sort_order = ?,
+          status = ?
+      WHERE id = ?
+    `).run(finalName, finalIcon, finalImage, finalDesc, finalSort, finalStatus, id);
+
+    logAudit(req.user!.id, 'edit_category', 'category', String(id), `Updated category "${finalName}"`);
+    return res.json({ success: true, message: 'Category updated successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to update category: ' + err.message });
+  }
+});
+
+// Reorder Categories (Persistent Drag-and-Drop)
+adminRouter.post('/categories/reorder', (req: AuthRequest, res: Response) => {
+  const { order } = req.body; // Array of { id: number, sort_order: number } or [id1, id2, ...]
+  if (!Array.isArray(order) || order.length === 0) {
+    return res.status(400).json({ error: 'Valid category order array is required.' });
+  }
+
+  const updateStmt = db.prepare('UPDATE categories SET sort_order = ? WHERE id = ?');
+  db.exec('BEGIN TRANSACTION');
+  try {
+    for (let i = 0; i < order.length; i++) {
+      const item = order[i];
+      const catId = typeof item === 'object' && item !== null ? Number(item.id) : Number(item);
+      const sortVal = typeof item === 'object' && item !== null && item.sort_order !== undefined
+        ? Number(item.sort_order)
+        : (i + 1);
+
+      if (!isNaN(catId)) {
+        updateStmt.run(sortVal, catId);
+      }
+    }
+    db.exec('COMMIT');
+    logAudit(req.user!.id, 'reorder_categories', 'category', 'all', `Reordered ${order.length} categories`);
+    return res.json({ success: true, message: 'Category order saved permanently.' });
+  } catch (err: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Failed to save category order: ' + err.message });
+  }
+});
+
+// Upload Category Image / Logo
+adminRouter.post('/categories/upload-icon', (req: AuthRequest, res: Response) => {
+  const { image_data, filename } = req.body;
+  if (!image_data || typeof image_data !== 'string') {
+    return res.status(400).json({ error: 'Base64 image data is required.' });
+  }
+
+  try {
+    const uploadsDir = getUploadsDirectory();
+    // Detect format
+    let ext = 'png';
+    if (image_data.startsWith('data:image/jpeg') || image_data.startsWith('data:image/jpg')) ext = 'jpg';
+    else if (image_data.startsWith('data:image/webp')) ext = 'webp';
+    else if (image_data.startsWith('data:image/svg')) ext = 'svg';
+
+    const cleanBase64 = image_data.replace(/^data:image\/[a-z0-9+-]+;base64,/, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    if (buffer.length < 50) {
+      return res.status(400).json({ error: 'Invalid or corrupt image file.' });
+    }
+
+    const uniqueName = `cat_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+    const targetPath = path.join(uploadsDir, uniqueName);
+
+    fs.writeFileSync(targetPath, buffer);
+    const publicUrl = `/uploads/categories/${uniqueName}`;
+
+    return res.json({ success: true, url: publicUrl, message: 'Category image uploaded successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to save image: ' + err.message });
+  }
 });
 
 // Delete Category
 adminRouter.delete('/categories/:id', (req: AuthRequest, res: Response) => {
   const id = parseInt(req.params.id, 10);
-  // Check if services exist under category
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid category ID.' });
+
   const count = db.prepare('SELECT COUNT(*) as count FROM services WHERE category_id = ?').get(id) as any;
-  if (count.count > 0) {
-    return res.status(400).json({ error: 'Cannot delete category that contains active services. Delete or reassign services first.' });
+  const isForce = req.query.force === 'true';
+
+  if (count.count > 0 && !isForce) {
+    return res.status(400).json({
+      error: `Cannot delete category because it contains ${count.count} active services. Please delete or reassign services first.`,
+      service_count: count.count
+    });
   }
 
-  db.prepare('DELETE FROM categories WHERE id = ?').run(id);
-  return res.json({ success: true, message: 'Category deleted' });
+  db.exec('BEGIN TRANSACTION');
+  try {
+    if (isForce && count.count > 0) {
+      // Reassign services to another category if exists, or remove category reference
+      const otherCat = db.prepare('SELECT id FROM categories WHERE id != ? LIMIT 1').get(id) as any;
+      if (otherCat) {
+        db.prepare('UPDATE services SET category_id = ? WHERE category_id = ?').run(otherCat.id, id);
+      }
+    }
+    db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    db.exec('COMMIT');
+    logAudit(req.user!.id, 'delete_category', 'category', String(id), `Deleted category #${id}`);
+    return res.json({ success: true, message: 'Category deleted successfully.' });
+  } catch (err: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Failed to delete category: ' + err.message });
+  }
 });
 
-// Add Service
+// ==========================================
+// SERVICE MANAGEMENT (COMPREHENSIVELY FIXED & EXPANDED)
+// ==========================================
+
+// Get all services (Admin View: includes inactive, with category & provider names)
+adminRouter.get('/services', (req: AuthRequest, res: Response) => {
+  const services = db.prepare(`
+    SELECT s.*, c.name as category_name, c.sort_order as category_sort, p.name as provider_name
+    FROM services s
+    LEFT JOIN categories c ON s.category_id = c.id
+    LEFT JOIN providers p ON s.provider_id = p.id
+    ORDER BY c.sort_order ASC, s.id ASC
+  `).all() as any[];
+
+  const categories = db.prepare(`
+    SELECT c.*, COUNT(s.id) as service_count
+    FROM categories c
+    LEFT JOIN services s ON s.category_id = c.id
+    GROUP BY c.id
+    ORDER BY c.sort_order ASC, c.id ASC
+  `).all() as any[];
+
+  return res.json({ services, categories });
+});
+
+// Add Service with strict server-side validation
 adminRouter.post('/services', (req: AuthRequest, res: Response) => {
-  const { category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported } = req.body;
+  const {
+    category_id,
+    name,
+    type,
+    rate_per_1000,
+    min_quantity,
+    max_quantity,
+    description,
+    refill_supported,
+    cancel_supported,
+    provider_id,
+    provider_service_id,
+    status
+  } = req.body;
 
-  if (!category_id || !name || !rate_per_1000 || !min_quantity || !max_quantity) {
-    return res.status(400).json({ error: 'Category, name, rate per 1000, min and max quantities are required.' });
+  // 1. Validate Service Name
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Service name is required.' });
   }
 
-  const resServ = db.prepare(`
-    INSERT INTO services (category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-  `).run(
-    Number(category_id),
-    name.trim(),
-    type || 'Default',
-    parseFloat(rate_per_1000),
-    parseInt(min_quantity, 10),
-    parseInt(max_quantity, 10),
-    description || '',
-    refill_supported ? 1 : 0,
-    cancel_supported ? 1 : 0
-  );
+  // 2. Validate Category ID
+  const catId = Number(category_id);
+  if (isNaN(catId)) {
+    return res.status(400).json({ error: 'Please select a valid category.' });
+  }
+  const catExists = db.prepare('SELECT id FROM categories WHERE id = ?').get(catId);
+  if (!catExists) {
+    return res.status(400).json({ error: 'The selected category does not exist.' });
+  }
 
-  logAudit(req.user!.id, 'create_service', 'service', String(resServ.lastInsertRowid), `Created service ${name}`);
-  return res.status(201).json({ success: true, id: Number(resServ.lastInsertRowid), message: 'Service created successfully' });
+  // 3. Validate Rate
+  const rate = parseFloat(rate_per_1000);
+  if (isNaN(rate) || rate <= 0) {
+    return res.status(400).json({ error: 'Rate per 1000 must be a valid positive number.' });
+  }
+
+  // 4. Validate Quantities
+  const minQty = parseInt(min_quantity, 10);
+  if (isNaN(minQty) || minQty < 1) {
+    return res.status(400).json({ error: 'Minimum quantity must be at least 1.' });
+  }
+
+  const maxQty = parseInt(max_quantity, 10);
+  if (isNaN(maxQty) || maxQty < minQty) {
+    return res.status(400).json({ error: 'Maximum quantity must be greater than or equal to minimum quantity.' });
+  }
+
+  const provId = provider_id && provider_id !== 'none' ? Number(provider_id) : null;
+  const provServId = provider_service_id ? String(provider_service_id).trim() : null;
+
+  try {
+    const resServ = db.prepare(`
+      INSERT INTO services (category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, provider_id, provider_service_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      catId,
+      String(name).trim(),
+      type ? String(type).trim() : 'Default',
+      rate,
+      minQty,
+      maxQty,
+      description ? String(description).trim() : '',
+      refill_supported ? 1 : 0,
+      cancel_supported ? 1 : 0,
+      provId,
+      provServId,
+      status === 'inactive' ? 'inactive' : 'active'
+    );
+
+    const newId = Number(resServ.lastInsertRowid);
+    logAudit(req.user!.id, 'create_service', 'service', String(newId), `Created service #${newId} (${name})`);
+    return res.status(201).json({ success: true, id: newId, message: 'Service created successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to create service: ' + err.message });
+  }
 });
 
-// Update Service
+// Update Service (COMPREHENSIVELY FIXED & TESTED)
 adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
   const id = parseInt(req.params.id, 10);
-  const { category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, status } = req.body;
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid service ID.' });
 
-  db.prepare(`
-    UPDATE services
-    SET category_id = COALESCE(?, category_id),
-        name = COALESCE(?, name),
-        type = COALESCE(?, type),
-        rate_per_1000 = COALESCE(?, rate_per_1000),
-        min_quantity = COALESCE(?, min_quantity),
-        max_quantity = COALESCE(?, max_quantity),
-        description = COALESCE(?, description),
-        refill_supported = COALESCE(?, refill_supported),
-        cancel_supported = COALESCE(?, cancel_supported),
-        status = COALESCE(?, status)
-    WHERE id = ?
-  `).run(
-    category_id !== undefined ? Number(category_id) : null,
-    name || null,
-    type || null,
-    rate_per_1000 !== undefined ? parseFloat(rate_per_1000) : null,
-    min_quantity !== undefined ? parseInt(min_quantity, 10) : null,
-    max_quantity !== undefined ? parseInt(max_quantity, 10) : null,
-    description !== undefined ? description : null,
-    refill_supported !== undefined ? (refill_supported ? 1 : 0) : null,
-    cancel_supported !== undefined ? (cancel_supported ? 1 : 0) : null,
-    status || null,
-    id
-  );
+  const existing = db.prepare('SELECT * FROM services WHERE id = ?').get(id) as any;
+  if (!existing) {
+    return res.status(404).json({ error: `Service #${id} was not found.` });
+  }
 
-  return res.json({ success: true, message: 'Service updated successfully' });
+  const {
+    category_id,
+    name,
+    type,
+    rate_per_1000,
+    min_quantity,
+    max_quantity,
+    description,
+    refill_supported,
+    cancel_supported,
+    provider_id,
+    provider_service_id,
+    status
+  } = req.body;
+
+  // Validation
+  if (name !== undefined && !String(name).trim()) {
+    return res.status(400).json({ error: 'Service name cannot be empty.' });
+  }
+
+  const finalCatId = category_id !== undefined ? Number(category_id) : existing.category_id;
+  const catExists = db.prepare('SELECT id FROM categories WHERE id = ?').get(finalCatId);
+  if (!catExists) {
+    return res.status(400).json({ error: `Category #${finalCatId} does not exist.` });
+  }
+
+  const finalRate = rate_per_1000 !== undefined ? parseFloat(rate_per_1000) : existing.rate_per_1000;
+  if (isNaN(finalRate) || finalRate <= 0) {
+    return res.status(400).json({ error: 'Rate per 1000 must be a valid positive number.' });
+  }
+
+  const finalMin = min_quantity !== undefined ? parseInt(min_quantity, 10) : existing.min_quantity;
+  if (isNaN(finalMin) || finalMin < 1) {
+    return res.status(400).json({ error: 'Minimum quantity must be at least 1.' });
+  }
+
+  const finalMax = max_quantity !== undefined ? parseInt(max_quantity, 10) : existing.max_quantity;
+  if (isNaN(finalMax) || finalMax < finalMin) {
+    return res.status(400).json({ error: 'Maximum quantity must be greater than or equal to minimum quantity.' });
+  }
+
+  const finalName = name !== undefined ? String(name).trim() : existing.name;
+  const finalType = type !== undefined ? String(type).trim() : existing.type;
+  const finalDesc = description !== undefined ? String(description) : (existing.description || '');
+  const finalRefill = refill_supported !== undefined ? (refill_supported ? 1 : 0) : existing.refill_supported;
+  const finalCancel = cancel_supported !== undefined ? (cancel_supported ? 1 : 0) : existing.cancel_supported;
+  const finalStatus = status !== undefined ? String(status) : existing.status;
+  const finalProvId = provider_id !== undefined ? (provider_id && provider_id !== 'none' ? Number(provider_id) : null) : existing.provider_id;
+  const finalProvServId = provider_service_id !== undefined ? (provider_service_id ? String(provider_service_id).trim() : null) : existing.provider_service_id;
+
+  try {
+    db.prepare(`
+      UPDATE services
+      SET category_id = ?,
+          name = ?,
+          type = ?,
+          rate_per_1000 = ?,
+          min_quantity = ?,
+          max_quantity = ?,
+          description = ?,
+          refill_supported = ?,
+          cancel_supported = ?,
+          provider_id = ?,
+          provider_service_id = ?,
+          status = ?
+      WHERE id = ?
+    `).run(
+      finalCatId,
+      finalName,
+      finalType,
+      finalRate,
+      finalMin,
+      finalMax,
+      finalDesc,
+      finalRefill,
+      finalCancel,
+      finalProvId,
+      finalProvServId,
+      finalStatus,
+      id
+    );
+
+    logAudit(req.user!.id, 'edit_service', 'service', String(id), `Updated service #${id} (${finalName})`);
+
+    const updated = db.prepare(`
+      SELECT s.*, c.name as category_name, p.name as provider_name
+      FROM services s
+      LEFT JOIN categories c ON s.category_id = c.id
+      LEFT JOIN providers p ON s.provider_id = p.id
+      WHERE s.id = ?
+    `).get(id);
+
+    return res.json({
+      success: true,
+      message: `Service #${id} updated successfully.`,
+      service: updated
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to update service: ' + err.message });
+  }
 });
 
-// Delete Service
+// Bulk Enable/Disable Services
+adminRouter.post('/services/bulk-status', (req: AuthRequest, res: Response) => {
+  const { ids, status } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Please select at least one service.' });
+  }
+  if (!['active', 'inactive'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid status. Must be active or inactive.' });
+  }
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    const stmt = db.prepare('UPDATE services SET status = ? WHERE id = ?');
+    for (const id of ids) {
+      stmt.run(status, Number(id));
+    }
+    db.exec('COMMIT');
+    logAudit(req.user!.id, 'bulk_status_services', 'service', ids.join(','), `Updated ${ids.length} services to ${status}`);
+    return res.json({ success: true, message: `Successfully marked ${ids.length} services as ${status}.` });
+  } catch (err: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Bulk status update failed: ' + err.message });
+  }
+});
+
+// Bulk Reassign Category
+adminRouter.post('/services/bulk-category', (req: AuthRequest, res: Response) => {
+  const { ids, category_id } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Please select at least one service.' });
+  }
+  const cat = db.prepare('SELECT id, name FROM categories WHERE id = ?').get(Number(category_id)) as any;
+  if (!cat) {
+    return res.status(400).json({ error: 'Selected category does not exist.' });
+  }
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    const stmt = db.prepare('UPDATE services SET category_id = ? WHERE id = ?');
+    for (const id of ids) {
+      stmt.run(cat.id, Number(id));
+    }
+    db.exec('COMMIT');
+    logAudit(req.user!.id, 'bulk_category_services', 'service', ids.join(','), `Moved ${ids.length} services to category "${cat.name}"`);
+    return res.json({ success: true, message: `Successfully moved ${ids.length} services to ${cat.name}.` });
+  } catch (err: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Bulk category update failed: ' + err.message });
+  }
+});
+
+// Bulk Delete Services (Preserves historical orders & users)
+adminRouter.post('/services/bulk-delete', (req: AuthRequest, res: Response) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Please select at least one service to delete.' });
+  }
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    const stmt = db.prepare('DELETE FROM services WHERE id = ?');
+    for (const id of ids) {
+      stmt.run(Number(id));
+    }
+    db.exec('COMMIT');
+    logAudit(req.user!.id, 'bulk_delete_services', 'service', ids.join(','), `Deleted ${ids.length} services`);
+    return res.json({ success: true, message: `Successfully deleted ${ids.length} services.` });
+  } catch (err: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Bulk delete failed: ' + err.message });
+  }
+});
+
+// Delete Single Service
 adminRouter.delete('/services/:id', (req: AuthRequest, res: Response) => {
   const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid service ID.' });
+
   db.prepare('DELETE FROM services WHERE id = ?').run(id);
   logAudit(req.user!.id, 'delete_service', 'service', String(id), `Deleted service #${id}`);
   return res.json({ success: true, message: 'Service deleted successfully' });
 });
+
+// Delete ALL Services (Strict Confirmation "DELETE ALL", preserves historical orders, users, balances, transactions)
+adminRouter.post('/services/delete-all', (req: AuthRequest, res: Response) => {
+  const { confirmation } = req.body;
+  if (confirmation !== 'DELETE ALL') {
+    return res.status(400).json({ error: 'Confirmation string must be exactly "DELETE ALL".' });
+  }
+
+  const countRow = db.prepare('SELECT COUNT(*) as count FROM services').get() as any;
+  const count = countRow?.count || 0;
+
+  db.exec('BEGIN TRANSACTION');
+  try {
+    // Only delete services records; orders, transactions, users, balances, categories remain 100% intact
+    db.prepare('DELETE FROM services').run();
+    db.exec('COMMIT');
+    logAudit(req.user!.id, 'delete_all_services', 'service', 'all', `Deleted all ${count} services from catalog`);
+    return res.json({
+      success: true,
+      message: `All ${count} services have been removed from the catalog. Historical orders and customer records remain completely intact.`
+    });
+  } catch (err: any) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: 'Failed to delete all services: ' + err.message });
+  }
+});
+
 
 // ==========================================
 // PAYMENT REQUEST APPROVAL / REJECTION

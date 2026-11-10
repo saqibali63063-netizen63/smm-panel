@@ -465,8 +465,35 @@ export function initDb() {
     db.exec(`ALTER TABLE payment_requests ADD COLUMN network TEXT;`);
   } catch {}
 
+  try {
+    db.exec(`ALTER TABLE categories ADD COLUMN description TEXT;`);
+  } catch {}
+
+  try {
+    db.exec(`ALTER TABLE categories ADD COLUMN image_url TEXT;`);
+  } catch {}
+
   seedInitialData();
 }
+
+// Persistent uploads directory resolution
+export function getUploadsDirectory(): string {
+  const baseDir = process.env.DATA_DIR || path.dirname(DB_PATH);
+  const uploadsDir = path.join(baseDir, 'uploads', 'categories');
+  if (!fs.existsSync(uploadsDir)) {
+    try {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    } catch {
+      const cwdUploads = path.resolve(process.cwd(), 'uploads', 'categories');
+      if (!fs.existsSync(cwdUploads)) {
+        try { fs.mkdirSync(cwdUploads, { recursive: true }); } catch {}
+      }
+      return cwdUploads;
+    }
+  }
+  return uploadsDir;
+}
+
 
 function seedInitialData() {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };

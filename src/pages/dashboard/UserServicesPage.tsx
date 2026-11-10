@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../lib/api.ts';
 import type { Category, Service } from '../../types/index.ts';
+import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
 import { Star, Search, Info, X } from 'lucide-react';
 
 interface UserServicesPageProps {
@@ -118,13 +119,20 @@ export const UserServicesPage: React.FC<UserServicesPageProps> = ({ onNavigate }
               <button
                 key={c.id}
                 onClick={() => setSelectedCatId(c.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
                   isSelected
                     ? 'bg-sky-600 text-white'
                     : 'bg-[#090f20] border border-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                {c.name} ({count})
+                <CategoryIconBadge
+                  categoryName={c.name}
+                  imageUrl={c.image_url}
+                  icon={c.icon}
+                  size="xs"
+                />
+                <span>{c.name}</span>
+                <span className="opacity-75">({count})</span>
               </button>
             );
           })}
@@ -175,9 +183,16 @@ export const UserServicesPage: React.FC<UserServicesPageProps> = ({ onNavigate }
                       </td>
                       <td className="py-3 px-3 font-mono text-slate-400">#{s.id}</td>
                       <td className="py-3 px-4 font-medium text-white max-w-lg">
-                        <div className="flex flex-col">
+                        <div className="flex flex-col gap-0.5">
                           <span>{s.name}</span>
-                          <span className="text-[11px] text-slate-400">{s.category_name}</span>
+                          <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                            <CategoryIconBadge
+                              categoryName={s.category_name}
+                              imageUrl={categories.find(c => c.id === s.category_id)?.image_url}
+                              size="xs"
+                            />
+                            <span>{s.category_name}</span>
+                          </span>
                         </div>
                       </td>
                       <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums whitespace-nowrap">
