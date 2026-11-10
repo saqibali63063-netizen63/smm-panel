@@ -200,3 +200,35 @@ export interface PlatformStats {
   active_services: number;
   satisfaction_rate: string;
 }
+
+export interface DatabaseStats {
+  exists: boolean;
+  path: string;
+  size_bytes: number;
+  size_formatted: string;
+  is_custom_path: boolean;
+  storage_type: string;
+  users_count: number;
+  orders_count: number;
+  transactions_count: number;
+  payments_count: number;
+  services_count: number;
+  settings_count: number;
+  total_revenue: number;
+  total_backups: number;
+  latest_backup?: {
+    filename: string;
+    size: number;
+    sizeFormatted: string;
+    createdAt: string;
+  } | null;
+  error?: string;
+}
+
+export interface DatabaseBackupItem {
+  filename: string;
+  size: number;
+  sizeFormatted: string;
+  createdAt: string;
+}
+

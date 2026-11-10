@@ -1,9 +1,78 @@
 import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs';
 
-const DB_PATH = path.resolve(process.cwd(), 'pakservices.db');
+// Resolve persistent production database path
+export function resolveDatabasePath(): string {
+  // 1. Explicit DATABASE_PATH env var (e.g. /home/u123456789/pakservices_data/pakservices.db on Hostinger)
+  if (process.env.DATABASE_PATH && process.env.DATABASE_PATH.trim()) {
+    const customPath = path.resolve(process.env.DATABASE_PATH.trim());
+    const dir = path.dirname(customPath);
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (e) {
+        console.warn('Could not create custom DATABASE_PATH directory:', e);
+      }
+    }
+    // If persistent path is empty but local default exists, migrate it so no data is lost
+    const localDefault = path.resolve(process.cwd(), 'pakservices.db');
+    if (!fs.existsSync(customPath) && fs.existsSync(localDefault)) {
+      try {
+        fs.copyFileSync(localDefault, customPath);
+        console.log(`📦 Safely migrated existing database to persistent path: ${customPath}`);
+      } catch (e) {
+        console.error('Failed to migrate database to persistent path:', e);
+      }
+    }
+    return customPath;
+  }
+
+  // 2. DATA_DIR env var (e.g. /home/u123456789/pakservices_data)
+  if (process.env.DATA_DIR && process.env.DATA_DIR.trim()) {
+    const dir = path.resolve(process.env.DATA_DIR.trim());
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (e) {
+        console.warn('Could not create DATA_DIR:', e);
+      }
+    }
+    const targetPath = path.join(dir, 'pakservices.db');
+    const localDefault = path.resolve(process.cwd(), 'pakservices.db');
+    if (!fs.existsSync(targetPath) && fs.existsSync(localDefault)) {
+      try {
+        fs.copyFileSync(localDefault, targetPath);
+        console.log(`📦 Safely migrated existing database to DATA_DIR: ${targetPath}`);
+      } catch (e) {
+        console.error('Failed to migrate database to DATA_DIR:', e);
+      }
+    }
+    return targetPath;
+  }
+
+  // 3. Fallback: Check if ../pakservices_storage exists outside git clone root
+  const parentStorage = path.resolve(process.cwd(), '..', 'pakservices_storage');
+  if (fs.existsSync(parentStorage)) {
+    const parentDb = path.join(parentStorage, 'pakservices.db');
+    const localDefault = path.resolve(process.cwd(), 'pakservices.db');
+    if (!fs.existsSync(parentDb) && fs.existsSync(localDefault)) {
+      try {
+        fs.copyFileSync(localDefault, parentDb);
+      } catch {}
+    }
+    return parentDb;
+  }
+
+  // 4. Default to application directory
+  return path.resolve(process.cwd(), 'pakservices.db');
+}
+
+export const DB_PATH = resolveDatabasePath();
+console.log(`📁 Connected to database: ${DB_PATH}`);
 export const db = new DatabaseSync(DB_PATH);
+
 
 // Helper for hashing passwords securely with salt
 export function hashPassword(password: string): string {
@@ -35,8 +104,191 @@ export function generateReferralCode(): string {
   return 'PAK' + crypto.randomBytes(4).toString('hex').toUpperCase();
 }
 
-// Initialize tables
+// Backup directory resolution
+export function getBackupsDirectory(): string {
+  const baseDir = path.dirname(DB_PATH);
+  const backupDir = path.join(baseDir, 'backups');
+  if (!fs.existsSync(backupDir)) {
+    try {
+      fs.mkdirSync(backupDir, { recursive: true });
+    } catch {
+      const cwdBackups = path.resolve(process.cwd(), 'backups');
+      if (!fs.existsSync(cwdBackups)) {
+        try { fs.mkdirSync(cwdBackups, { recursive: true }); } catch {}
+      }
+      return cwdBackups;
+    }
+  }
+  return backupDir;
+}
+
+// Create a timestamped backup snapshot of the database file
+export function createDatabaseBackup(label: string = 'snapshot'): { success: boolean; filename: string; path: string; size: number } {
+  try {
+    if (!fs.existsSync(DB_PATH)) {
+      return { success: false, filename: '', path: '', size: 0 };
+    }
+    const stat = fs.statSync(DB_PATH);
+    if (stat.size === 0) {
+      return { success: false, filename: '', path: '', size: 0 };
+    }
+
+    const backupDir = getBackupsDirectory();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `pakservices_${label}_${timestamp}.db`;
+    const targetPath = path.join(backupDir, filename);
+
+    // Flush WAL / checkpoint if possible
+    try {
+      db.exec('PRAGMA wal_checkpoint(PASSIVE);');
+    } catch {}
+
+    fs.copyFileSync(DB_PATH, targetPath);
+    const backupStat = fs.statSync(targetPath);
+
+    console.log(`🛡️ Database Backup preserved: ${filename} (${(backupStat.size / 1024).toFixed(1)} KB)`);
+
+    // Keep the latest 20 backup files and prune older ones
+    try {
+      const files = fs.readdirSync(backupDir)
+        .filter(f => f.startsWith('pakservices_') && f.endsWith('.db'))
+        .map(f => ({ name: f, time: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+        .sort((a, b) => b.time - a.time);
+
+      if (files.length > 20) {
+        for (const oldFile of files.slice(20)) {
+          try { fs.unlinkSync(path.join(backupDir, oldFile.name)); } catch {}
+        }
+      }
+    } catch {}
+
+    return { success: true, filename, path: targetPath, size: backupStat.size };
+  } catch (err) {
+    console.error('Failed to create database backup:', err);
+    return { success: false, filename: '', path: '', size: 0 };
+  }
+}
+
+// List all existing backups
+export function listDatabaseBackups(): Array<{ filename: string; size: number; createdAt: string; sizeFormatted: string }> {
+  try {
+    const backupDir = getBackupsDirectory();
+    if (!fs.existsSync(backupDir)) return [];
+
+    const files = fs.readdirSync(backupDir)
+      .filter(f => f.startsWith('pakservices_') && f.endsWith('.db'))
+      .map(f => {
+        const full = path.join(backupDir, f);
+        const stat = fs.statSync(full);
+        return {
+          filename: f,
+          size: stat.size,
+          sizeFormatted: `${(stat.size / 1024).toFixed(1)} KB`,
+          createdAt: stat.mtime.toISOString()
+        };
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+// Return database health & statistics
+export function getDatabaseStats() {
+  try {
+    let size = 0;
+    let exists = false;
+    if (fs.existsSync(DB_PATH)) {
+      exists = true;
+      size = fs.statSync(DB_PATH).size;
+    }
+
+    const users = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
+    const orders = db.prepare('SELECT COUNT(*) as count FROM orders').get() as any;
+    const transactions = db.prepare('SELECT COUNT(*) as count FROM transactions').get() as any;
+    const payments = db.prepare('SELECT COUNT(*) as count FROM payment_requests').get() as any;
+    const services = db.prepare('SELECT COUNT(*) as count FROM services').get() as any;
+    const settings = db.prepare('SELECT COUNT(*) as count FROM settings').get() as any;
+    const revenue = db.prepare("SELECT SUM(amount) as total FROM payment_requests WHERE status = 'approved'").get() as any;
+
+    const backups = listDatabaseBackups();
+
+    return {
+      exists,
+      path: DB_PATH,
+      size_bytes: size,
+      size_formatted: `${(size / 1024).toFixed(1)} KB`,
+      is_custom_path: Boolean(process.env.DATABASE_PATH || process.env.DATA_DIR),
+      storage_type: (process.env.DATABASE_PATH || process.env.DATA_DIR) ? 'Persistent Custom Path' : 'Default Directory Path',
+      users_count: users?.count || 0,
+      orders_count: orders?.count || 0,
+      transactions_count: transactions?.count || 0,
+      payments_count: payments?.count || 0,
+      services_count: services?.count || 0,
+      settings_count: settings?.count || 0,
+      total_revenue: revenue?.total || 0,
+      total_backups: backups.length,
+      latest_backup: backups[0] || null
+    };
+  } catch (err: any) {
+    return {
+      exists: false,
+      path: DB_PATH,
+      error: err.message
+    };
+  }
+}
+
+// Export entire database as clean JSON
+export function exportDatabaseJson() {
+  const users = db.prepare('SELECT id, email, username, role, balance, spent, status, referral_code, created_at, timezone, currency, theme FROM users').all();
+  const orders = db.prepare('SELECT * FROM orders').all();
+  const transactions = db.prepare('SELECT * FROM transactions').all();
+  const payment_requests = db.prepare('SELECT * FROM payment_requests').all();
+  const services = db.prepare('SELECT * FROM services').all();
+  const categories = db.prepare('SELECT * FROM categories').all();
+  const providers = db.prepare('SELECT id, name, api_url, status, balance, currency, created_at FROM providers').all();
+  const settings = db.prepare('SELECT * FROM settings').all();
+  const announcements = db.prepare('SELECT * FROM announcements').all();
+
+  return {
+    export_timestamp: new Date().toISOString(),
+    database_path: DB_PATH,
+    counts: {
+      users: users.length,
+      orders: orders.length,
+      transactions: transactions.length,
+      payments: payment_requests.length,
+      services: services.length
+    },
+    data: {
+      users,
+      orders,
+      transactions,
+      payment_requests,
+      services,
+      categories,
+      providers,
+      settings,
+      announcements
+    }
+  };
+}
+
+// Initialize tables safely & non-destructively
 export function initDb() {
+  // 1. Create an automated snapshot before any table migrations
+  try {
+    if (fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).size > 0) {
+      createDatabaseBackup('startup');
+    }
+  } catch (backupErr) {
+    console.warn('Startup backup skipped:', backupErr);
+  }
+
+  // 2. Safe non-destructive CREATE TABLE IF NOT EXISTS
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +456,7 @@ export function initDb() {
     );
   `);
 
+  // Safe column additions
   try {
     db.exec(`ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'midnight';`);
   } catch {}
@@ -217,7 +470,14 @@ export function initDb() {
 
 function seedInitialData() {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
-  if (userCount.count === 0) {
+  
+  // CRITICAL PRODUCTION SAFEGUARD:
+  // If ANY user exists in the database, OR if DISABLE_SEED is set, NEVER seed dummy demo users, transactions, or orders!
+  if (userCount.count > 0 || process.env.DISABLE_SEED === 'true') {
+    ensureDefaultSettings();
+    return;
+  }
+
     const now = new Date().toISOString();
     
     // Seed Admin
@@ -246,8 +506,59 @@ function seedInitialData() {
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
       VALUES (2, 'order', -500.0, 4500.0, 'Order #101 - Instagram High Quality Followers', 'ORD-101', ?)
     `).run(now);
-  }
 
+
+    // Seed Demo Orders, Tickets & Payments ONLY for fresh demo installation (zero existing users)
+    const nowOrd = new Date();
+    const yesterday = new Date(Date.now() - 86400000).toISOString();
+    const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
+
+    db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Auto', ?, ?)
+    `).run(twoDaysAgo, twoDaysAgo);
+
+    db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Auto', ?, ?)
+    `).run(yesterday, yesterday);
+
+    db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (103, 2, 11, 'https://youtube.com/@TechTalkPakistan', 100, 115.0, 310, 100, 'Pending', 'Manual', ?, ?)
+    `).run(nowOrd.toISOString(), nowOrd.toISOString());
+
+    // Seed Demo Support Ticket
+    db.prepare(`
+      INSERT INTO support_tickets (id, user_id, subject, category, priority, order_id, status, created_at, updated_at)
+      VALUES (501, 2, 'Speed inquiry on Order #102 TikTok Views', 'Order', 'normal', 102, 'answered', ?, ?)
+    `).run(yesterday, nowOrd.toISOString());
+
+    db.prepare(`
+      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
+      VALUES (501, 2, 'user', 'Hi PakServices support, how long will it take for the remaining 2.4k views on order #102 to finish delivering?', ?)
+    `).run(yesterday);
+
+    db.prepare(`
+      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
+      VALUES (501, 1, 'admin', 'Hello! Our high-speed server delivers TikTok views gradually to simulate natural viral discovery. It will complete within 30-45 minutes. Thank you for choosing PakServices!', ?)
+    `).run(nowOrd.toISOString());
+
+    // Seed Demo Payment Request
+    db.prepare(`
+      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at, processed_at)
+      VALUES (2, 'JazzCash', 5000.0, 'TRX-98218731', '03001234567', 'approved', 'Verified and credited via JazzCash SMS receipt.', ?, ?)
+    `).run(twoDaysAgo, twoDaysAgo);
+
+    db.prepare(`
+      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at)
+      VALUES (2, 'Easypaisa', 1500.0, 'TRX-99882211', '03129876543', 'pending', 'Awaiting verification', ?)
+    `).run(nowOrd.toISOString());
+
+    ensureDefaultSettings();
+}
+
+export function ensureDefaultSettings() {
   const categoryCount = db.prepare('SELECT COUNT(*) as count FROM categories').get() as { count: number };
   if (categoryCount.count === 0) {
     const categories = [
@@ -319,7 +630,7 @@ function seedInitialData() {
     }
   }
 
-  // Seed sample provider
+  // Seed sample provider ONLY if no providers exist
   const provCount = db.prepare('SELECT COUNT(*) as count FROM providers').get() as { count: number };
   if (provCount.count === 0) {
     db.prepare(`
@@ -328,7 +639,7 @@ function seedInitialData() {
     `).run('Global SMM Master Gateway', 'https://api.globalsmm.demo/v2', 'prov_live_sec_8917238129', 'active', '384.20', 'USD', new Date().toISOString());
   }
 
-  // Seed initial settings
+  // Seed initial settings with INSERT OR IGNORE (never overwrites existing values)
   const settingsList = [
     { key: 'site_name', value: 'PakServices' },
     { key: 'site_tagline', value: 'Premier SMM Reseller Panel & Growth Engine' },
@@ -383,7 +694,7 @@ function seedInitialData() {
     insertSetting.run(set.key, set.value);
   }
 
-  // Seed announcements
+  // Seed announcements ONLY if empty
   const annCount = db.prepare('SELECT COUNT(*) as count FROM announcements').get() as { count: number };
   if (annCount.count === 0) {
     db.prepare(`
@@ -406,54 +717,5 @@ function seedInitialData() {
       new Date().toISOString()
     );
   }
-
-  // Seed initial orders for demo user
-  const orderCount = db.prepare('SELECT COUNT(*) as count FROM orders').get() as { count: number };
-  if (orderCount.count === 0) {
-    const now = new Date();
-    const yesterday = new Date(Date.now() - 86400000).toISOString();
-    const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
-
-    db.prepare(`
-      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Auto', ?, ?)
-    `).run(twoDaysAgo, twoDaysAgo);
-
-    db.prepare(`
-      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Auto', ?, ?)
-    `).run(yesterday, yesterday);
-
-    db.prepare(`
-      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (103, 2, 11, 'https://youtube.com/@TechTalkPakistan', 100, 115.0, 310, 100, 'Pending', 'Manual', ?, ?)
-    `).run(now.toISOString(), now.toISOString());
-
-    // Seed Demo Support Ticket
-    db.prepare(`
-      INSERT INTO support_tickets (id, user_id, subject, category, priority, order_id, status, created_at, updated_at)
-      VALUES (501, 2, 'Speed inquiry on Order #102 TikTok Views', 'Order', 'normal', 102, 'answered', ?, ?)
-    `).run(yesterday, now.toISOString());
-
-    db.prepare(`
-      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
-      VALUES (501, 2, 'user', 'Hi PakServices support, how long will it take for the remaining 2.4k views on order #102 to finish delivering?', ?)
-    `).run(yesterday);
-
-    db.prepare(`
-      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
-      VALUES (501, 1, 'admin', 'Hello! Our high-speed server delivers TikTok views gradually to simulate natural viral discovery. It will complete within 30-45 minutes. Thank you for choosing PakServices!', ?)
-    `).run(now.toISOString());
-
-    // Seed Demo Payment Request
-    db.prepare(`
-      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at, processed_at)
-      VALUES (2, 'JazzCash', 5000.0, 'TRX-98218731', '03001234567', 'approved', 'Verified and credited via JazzCash SMS receipt.', ?, ?)
-    `).run(twoDaysAgo, twoDaysAgo);
-
-    db.prepare(`
-      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at)
-      VALUES (2, 'Easypaisa', 1500.0, 'TRX-99882211', '03129876543', 'pending', 'Awaiting verification', ?)
-    `).run(now.toISOString());
-  }
 }
+

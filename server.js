@@ -7,7 +7,54 @@ import dotenv from "dotenv";
 import { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
 // server/db.ts
-var DB_PATH = path.resolve(process.cwd(), "pakservices.db");
+function resolveDatabasePath() {
+	if (process.env.DATABASE_PATH && process.env.DATABASE_PATH.trim()) {
+		const customPath = path.resolve(process.env.DATABASE_PATH.trim());
+		const dir = path.dirname(customPath);
+		if (!fs.existsSync(dir)) try {
+			fs.mkdirSync(dir, { recursive: true });
+		} catch (e) {
+			console.warn("Could not create custom DATABASE_PATH directory:", e);
+		}
+		const localDefault = path.resolve(process.cwd(), "pakservices.db");
+		if (!fs.existsSync(customPath) && fs.existsSync(localDefault)) try {
+			fs.copyFileSync(localDefault, customPath);
+			console.log(`📦 Safely migrated existing database to persistent path: ${customPath}`);
+		} catch (e) {
+			console.error("Failed to migrate database to persistent path:", e);
+		}
+		return customPath;
+	}
+	if (process.env.DATA_DIR && process.env.DATA_DIR.trim()) {
+		const dir = path.resolve(process.env.DATA_DIR.trim());
+		if (!fs.existsSync(dir)) try {
+			fs.mkdirSync(dir, { recursive: true });
+		} catch (e) {
+			console.warn("Could not create DATA_DIR:", e);
+		}
+		const targetPath = path.join(dir, "pakservices.db");
+		const localDefault = path.resolve(process.cwd(), "pakservices.db");
+		if (!fs.existsSync(targetPath) && fs.existsSync(localDefault)) try {
+			fs.copyFileSync(localDefault, targetPath);
+			console.log(`📦 Safely migrated existing database to DATA_DIR: ${targetPath}`);
+		} catch (e) {
+			console.error("Failed to migrate database to DATA_DIR:", e);
+		}
+		return targetPath;
+	}
+	const parentStorage = path.resolve(process.cwd(), "..", "pakservices_storage");
+	if (fs.existsSync(parentStorage)) {
+		const parentDb = path.join(parentStorage, "pakservices.db");
+		const localDefault = path.resolve(process.cwd(), "pakservices.db");
+		if (!fs.existsSync(parentDb) && fs.existsSync(localDefault)) try {
+			fs.copyFileSync(localDefault, parentDb);
+		} catch {}
+		return parentDb;
+	}
+	return path.resolve(process.cwd(), "pakservices.db");
+}
+var DB_PATH = resolveDatabasePath();
+console.log(`📁 Connected to database: ${DB_PATH}`);
 var db = new DatabaseSync(DB_PATH);
 function hashPassword(password) {
 	const salt = crypto.randomBytes(16).toString("hex");
@@ -31,7 +78,166 @@ function generateApiKey() {
 function generateReferralCode() {
 	return "PAK" + crypto.randomBytes(4).toString("hex").toUpperCase();
 }
+function getBackupsDirectory() {
+	const baseDir = path.dirname(DB_PATH);
+	const backupDir = path.join(baseDir, "backups");
+	if (!fs.existsSync(backupDir)) try {
+		fs.mkdirSync(backupDir, { recursive: true });
+	} catch {
+		const cwdBackups = path.resolve(process.cwd(), "backups");
+		if (!fs.existsSync(cwdBackups)) try {
+			fs.mkdirSync(cwdBackups, { recursive: true });
+		} catch {}
+		return cwdBackups;
+	}
+	return backupDir;
+}
+function createDatabaseBackup(label = "snapshot") {
+	try {
+		if (!fs.existsSync(DB_PATH)) return {
+			success: false,
+			filename: "",
+			path: "",
+			size: 0
+		};
+		if (fs.statSync(DB_PATH).size === 0) return {
+			success: false,
+			filename: "",
+			path: "",
+			size: 0
+		};
+		const backupDir = getBackupsDirectory();
+		const filename = `pakservices_${label}_${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.db`;
+		const targetPath = path.join(backupDir, filename);
+		try {
+			db.exec("PRAGMA wal_checkpoint(PASSIVE);");
+		} catch {}
+		fs.copyFileSync(DB_PATH, targetPath);
+		const backupStat = fs.statSync(targetPath);
+		console.log(`🛡️ Database Backup preserved: ${filename} (${(backupStat.size / 1024).toFixed(1)} KB)`);
+		try {
+			const files = fs.readdirSync(backupDir).filter((f) => f.startsWith("pakservices_") && f.endsWith(".db")).map((f) => ({
+				name: f,
+				time: fs.statSync(path.join(backupDir, f)).mtimeMs
+			})).sort((a, b) => b.time - a.time);
+			if (files.length > 20) for (const oldFile of files.slice(20)) try {
+				fs.unlinkSync(path.join(backupDir, oldFile.name));
+			} catch {}
+		} catch {}
+		return {
+			success: true,
+			filename,
+			path: targetPath,
+			size: backupStat.size
+		};
+	} catch (err) {
+		console.error("Failed to create database backup:", err);
+		return {
+			success: false,
+			filename: "",
+			path: "",
+			size: 0
+		};
+	}
+}
+function listDatabaseBackups() {
+	try {
+		const backupDir = getBackupsDirectory();
+		if (!fs.existsSync(backupDir)) return [];
+		return fs.readdirSync(backupDir).filter((f) => f.startsWith("pakservices_") && f.endsWith(".db")).map((f) => {
+			const full = path.join(backupDir, f);
+			const stat = fs.statSync(full);
+			return {
+				filename: f,
+				size: stat.size,
+				sizeFormatted: `${(stat.size / 1024).toFixed(1)} KB`,
+				createdAt: stat.mtime.toISOString()
+			};
+		}).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+	} catch {
+		return [];
+	}
+}
+function getDatabaseStats() {
+	try {
+		let size = 0;
+		let exists = false;
+		if (fs.existsSync(DB_PATH)) {
+			exists = true;
+			size = fs.statSync(DB_PATH).size;
+		}
+		const users = db.prepare("SELECT COUNT(*) as count FROM users").get();
+		const orders = db.prepare("SELECT COUNT(*) as count FROM orders").get();
+		const transactions = db.prepare("SELECT COUNT(*) as count FROM transactions").get();
+		const payments = db.prepare("SELECT COUNT(*) as count FROM payment_requests").get();
+		const services = db.prepare("SELECT COUNT(*) as count FROM services").get();
+		const settings = db.prepare("SELECT COUNT(*) as count FROM settings").get();
+		const revenue = db.prepare("SELECT SUM(amount) as total FROM payment_requests WHERE status = 'approved'").get();
+		const backups = listDatabaseBackups();
+		return {
+			exists,
+			path: DB_PATH,
+			size_bytes: size,
+			size_formatted: `${(size / 1024).toFixed(1)} KB`,
+			is_custom_path: Boolean(process.env.DATABASE_PATH || process.env.DATA_DIR),
+			storage_type: process.env.DATABASE_PATH || process.env.DATA_DIR ? "Persistent Custom Path" : "Default Directory Path",
+			users_count: users?.count || 0,
+			orders_count: orders?.count || 0,
+			transactions_count: transactions?.count || 0,
+			payments_count: payments?.count || 0,
+			services_count: services?.count || 0,
+			settings_count: settings?.count || 0,
+			total_revenue: revenue?.total || 0,
+			total_backups: backups.length,
+			latest_backup: backups[0] || null
+		};
+	} catch (err) {
+		return {
+			exists: false,
+			path: DB_PATH,
+			error: err.message
+		};
+	}
+}
+function exportDatabaseJson() {
+	const users = db.prepare("SELECT id, email, username, role, balance, spent, status, referral_code, created_at, timezone, currency, theme FROM users").all();
+	const orders = db.prepare("SELECT * FROM orders").all();
+	const transactions = db.prepare("SELECT * FROM transactions").all();
+	const payment_requests = db.prepare("SELECT * FROM payment_requests").all();
+	const services = db.prepare("SELECT * FROM services").all();
+	const categories = db.prepare("SELECT * FROM categories").all();
+	const providers = db.prepare("SELECT id, name, api_url, status, balance, currency, created_at FROM providers").all();
+	const settings = db.prepare("SELECT * FROM settings").all();
+	const announcements = db.prepare("SELECT * FROM announcements").all();
+	return {
+		export_timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+		database_path: DB_PATH,
+		counts: {
+			users: users.length,
+			orders: orders.length,
+			transactions: transactions.length,
+			payments: payment_requests.length,
+			services: services.length
+		},
+		data: {
+			users,
+			orders,
+			transactions,
+			payment_requests,
+			services,
+			categories,
+			providers,
+			settings,
+			announcements
+		}
+	};
+}
 function initDb() {
+	try {
+		if (fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).size > 0) createDatabaseBackup("startup");
+	} catch (backupErr) {
+		console.warn("Startup backup skipped:", backupErr);
+	}
 	db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,29 +413,69 @@ function initDb() {
 	seedInitialData();
 }
 function seedInitialData() {
-	if (db.prepare("SELECT COUNT(*) as count FROM users").get().count === 0) {
-		const now = (/* @__PURE__ */ new Date()).toISOString();
-		const adminHash = hashPassword("admin123");
-		const adminApiKey = generateApiKey();
-		db.prepare(`
+	if (db.prepare("SELECT COUNT(*) as count FROM users").get().count > 0 || process.env.DISABLE_SEED === "true") {
+		ensureDefaultSettings();
+		return;
+	}
+	const now = (/* @__PURE__ */ new Date()).toISOString();
+	const adminHash = hashPassword("admin123");
+	const adminApiKey = generateApiKey();
+	db.prepare(`
       INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run("admin@pakservices.com", "admin", adminHash, "admin", 5e4, 0, "active", adminApiKey, "PAKADMIN", now);
-		const userHash = hashPassword("user123");
-		const userApiKey = generateApiKey();
-		db.prepare(`
+	const userHash = hashPassword("user123");
+	const userApiKey = generateApiKey();
+	db.prepare(`
       INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run("user@pakservices.com", "demo_reseller", userHash, "user", 4500, 1250, "active", userApiKey, "PAKRESELL", now);
-		db.prepare(`
+	db.prepare(`
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
       VALUES (2, 'deposit', 5000.0, 5000.0, 'Initial JazzCash Deposit - Welcome Credit', 'TRX-98218731', ?)
     `).run(now);
-		db.prepare(`
+	db.prepare(`
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
       VALUES (2, 'order', -500.0, 4500.0, 'Order #101 - Instagram High Quality Followers', 'ORD-101', ?)
     `).run(now);
-	}
+	const nowOrd = /* @__PURE__ */ new Date();
+	const yesterday = (/* @__PURE__ */ new Date(Date.now() - 864e5)).toISOString();
+	const twoDaysAgo = (/* @__PURE__ */ new Date(Date.now() - 1728e5)).toISOString();
+	db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Auto', ?, ?)
+    `).run(twoDaysAgo, twoDaysAgo);
+	db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Auto', ?, ?)
+    `).run(yesterday, yesterday);
+	db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (103, 2, 11, 'https://youtube.com/@TechTalkPakistan', 100, 115.0, 310, 100, 'Pending', 'Manual', ?, ?)
+    `).run(nowOrd.toISOString(), nowOrd.toISOString());
+	db.prepare(`
+      INSERT INTO support_tickets (id, user_id, subject, category, priority, order_id, status, created_at, updated_at)
+      VALUES (501, 2, 'Speed inquiry on Order #102 TikTok Views', 'Order', 'normal', 102, 'answered', ?, ?)
+    `).run(yesterday, nowOrd.toISOString());
+	db.prepare(`
+      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
+      VALUES (501, 2, 'user', 'Hi PakServices support, how long will it take for the remaining 2.4k views on order #102 to finish delivering?', ?)
+    `).run(yesterday);
+	db.prepare(`
+      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
+      VALUES (501, 1, 'admin', 'Hello! Our high-speed server delivers TikTok views gradually to simulate natural viral discovery. It will complete within 30-45 minutes. Thank you for choosing PakServices!', ?)
+    `).run(nowOrd.toISOString());
+	db.prepare(`
+      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at, processed_at)
+      VALUES (2, 'JazzCash', 5000.0, 'TRX-98218731', '03001234567', 'approved', 'Verified and credited via JazzCash SMS receipt.', ?, ?)
+    `).run(twoDaysAgo, twoDaysAgo);
+	db.prepare(`
+      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at)
+      VALUES (2, 'Easypaisa', 1500.0, 'TRX-99882211', '03129876543', 'pending', 'Awaiting verification', ?)
+    `).run(nowOrd.toISOString());
+	ensureDefaultSettings();
+}
+function ensureDefaultSettings() {
 	if (db.prepare("SELECT COUNT(*) as count FROM categories").get().count === 0) {
 		const categories = [
 			{
@@ -636,43 +882,6 @@ function seedInitialData() {
       INSERT INTO announcements (title, content, type, active, created_at)
       VALUES (?, ?, ?, 1, ?)
     `).run("Instagram Algorithm Update Notice", "All Instagram Non-Drop servers have been upgraded to the newest API protocol. High-speed delivery with guaranteed 30-day refill is fully restored.", "info", (/* @__PURE__ */ new Date()).toISOString());
-	}
-	if (db.prepare("SELECT COUNT(*) as count FROM orders").get().count === 0) {
-		const now = /* @__PURE__ */ new Date();
-		const yesterday = (/* @__PURE__ */ new Date(Date.now() - 864e5)).toISOString();
-		const twoDaysAgo = (/* @__PURE__ */ new Date(Date.now() - 1728e5)).toISOString();
-		db.prepare(`
-      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Auto', ?, ?)
-    `).run(twoDaysAgo, twoDaysAgo);
-		db.prepare(`
-      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Auto', ?, ?)
-    `).run(yesterday, yesterday);
-		db.prepare(`
-      INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (103, 2, 11, 'https://youtube.com/@TechTalkPakistan', 100, 115.0, 310, 100, 'Pending', 'Manual', ?, ?)
-    `).run(now.toISOString(), now.toISOString());
-		db.prepare(`
-      INSERT INTO support_tickets (id, user_id, subject, category, priority, order_id, status, created_at, updated_at)
-      VALUES (501, 2, 'Speed inquiry on Order #102 TikTok Views', 'Order', 'normal', 102, 'answered', ?, ?)
-    `).run(yesterday, now.toISOString());
-		db.prepare(`
-      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
-      VALUES (501, 2, 'user', 'Hi PakServices support, how long will it take for the remaining 2.4k views on order #102 to finish delivering?', ?)
-    `).run(yesterday);
-		db.prepare(`
-      INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, message, created_at)
-      VALUES (501, 1, 'admin', 'Hello! Our high-speed server delivers TikTok views gradually to simulate natural viral discovery. It will complete within 30-45 minutes. Thank you for choosing PakServices!', ?)
-    `).run(now.toISOString());
-		db.prepare(`
-      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at, processed_at)
-      VALUES (2, 'JazzCash', 5000.0, 'TRX-98218731', '03001234567', 'approved', 'Verified and credited via JazzCash SMS receipt.', ?, ?)
-    `).run(twoDaysAgo, twoDaysAgo);
-		db.prepare(`
-      INSERT INTO payment_requests (user_id, method, amount, trx_id, sender_account, status, admin_notes, created_at)
-      VALUES (2, 'Easypaisa', 1500.0, 'TRX-99882211', '03129876543', 'pending', 'Awaiting verification', ?)
-    `).run(now.toISOString());
 	}
 }
 // server/auth.ts
@@ -1849,6 +2058,85 @@ adminRouter.get("/export/:type", (req, res) => {
 		return res.send(csv);
 	}
 	return res.status(400).json({ error: "Invalid export type." });
+});
+adminRouter.get("/database/status", (req, res) => {
+	const stats = getDatabaseStats();
+	return res.json({ stats });
+});
+adminRouter.post("/database/backup", (req, res) => {
+	const adminId = req.user.id;
+	const result = createDatabaseBackup("manual_admin");
+	if (result.success) {
+		logAudit(adminId, "manual_backup", "database", "pakservices.db", `Created backup ${result.filename} (${(result.size / 1024).toFixed(1)} KB)`);
+		return res.json({
+			success: true,
+			message: `Database backup created successfully: ${result.filename}`,
+			backup: result
+		});
+	} else return res.status(500).json({ error: "Failed to create database backup snapshot." });
+});
+adminRouter.get("/database/backups", (req, res) => {
+	const backups = listDatabaseBackups();
+	return res.json({ backups });
+});
+adminRouter.get("/database/download", (req, res) => {
+	if (!fs.existsSync(DB_PATH)) return res.status(404).json({ error: "Database file not found on server." });
+	try {
+		db.exec("PRAGMA wal_checkpoint(PASSIVE);");
+	} catch {}
+	const dateStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+	res.setHeader("Content-Type", "application/vnd.sqlite3");
+	res.setHeader("Content-Disposition", `attachment; filename="pakservices_database_live_${dateStr}.db"`);
+	return fs.createReadStream(DB_PATH).pipe(res);
+});
+adminRouter.get("/database/download-backup/:filename", (req, res) => {
+	const filename = path.basename(req.params.filename);
+	const backupDir = getBackupsDirectory();
+	const filePath = path.join(backupDir, filename);
+	if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Requested backup file not found." });
+	res.setHeader("Content-Type", "application/vnd.sqlite3");
+	res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+	return fs.createReadStream(filePath).pipe(res);
+});
+adminRouter.get("/database/export-json", (req, res) => {
+	const fullJson = exportDatabaseJson();
+	const dateStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+	res.setHeader("Content-Type", "application/json");
+	res.setHeader("Content-Disposition", `attachment; filename="pakservices_full_export_${dateStr}.json"`);
+	return res.send(JSON.stringify(fullJson, null, 2));
+});
+adminRouter.post("/database/restore", (req, res) => {
+	const adminId = req.user.id;
+	const { filename, file_base64 } = req.body;
+	try {
+		createDatabaseBackup("pre_restore_safety");
+		if (filename) {
+			const sanitizedFilename = path.basename(filename);
+			const backupDir = getBackupsDirectory();
+			const sourcePath = path.join(backupDir, sanitizedFilename);
+			if (!fs.existsSync(sourcePath)) return res.status(404).json({ error: "Selected backup file does not exist." });
+			fs.copyFileSync(sourcePath, DB_PATH);
+			logAudit(adminId, "restore_database", "database", sanitizedFilename, `Restored database from snapshot ${sanitizedFilename}`);
+			return res.json({
+				success: true,
+				message: `Database successfully restored from ${sanitizedFilename}.`
+			});
+		}
+		if (file_base64) {
+			const buffer = Buffer.from(file_base64.replace(/^data:.*,/, ""), "base64");
+			if (buffer.length < 100) return res.status(400).json({ error: "Uploaded file is invalid or too small." });
+			if (!buffer.subarray(0, 16).toString("utf-8").startsWith("SQLite format 3")) return res.status(400).json({ error: "Uploaded file is not a valid SQLite database file." });
+			fs.writeFileSync(DB_PATH, buffer);
+			logAudit(adminId, "restore_database", "database", "uploaded_file", `Restored database from uploaded .db file (${(buffer.length / 1024).toFixed(1)} KB)`);
+			return res.json({
+				success: true,
+				message: "Database successfully restored from uploaded file."
+			});
+		}
+		return res.status(400).json({ error: "Either filename or file_base64 must be provided." });
+	} catch (err) {
+		return res.status(500).json({ error: "Restore failed: " + err.message });
+	}
 });
 // server/routes/api-v2.ts
 var apiV2Router = Router();

@@ -1,7 +1,18 @@
 import { Router } from 'express';
 import type { Response } from 'express';
-import { db } from '../db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  db,
+  DB_PATH,
+  getDatabaseStats,
+  createDatabaseBackup,
+  listDatabaseBackups,
+  exportDatabaseJson,
+  getBackupsDirectory
+} from '../db.js';
 import { requireAdmin, type AuthRequest } from '../auth.js';
+
 
 export const adminRouter = Router();
 
@@ -650,3 +661,129 @@ adminRouter.get('/export/:type', (req: AuthRequest, res: Response) => {
 
   return res.status(400).json({ error: 'Invalid export type.' });
 });
+
+// ==========================================
+// DATABASE PRESERVATION & BACKUP SUITE
+// ==========================================
+
+// 1. Get database statistics & persistent storage status
+adminRouter.get('/database/status', (req: AuthRequest, res: Response) => {
+  const stats = getDatabaseStats();
+  return res.json({ stats });
+});
+
+// 2. Trigger an immediate manual database backup snapshot
+adminRouter.post('/database/backup', (req: AuthRequest, res: Response) => {
+  const adminId = req.user!.id;
+  const result = createDatabaseBackup('manual_admin');
+  if (result.success) {
+    logAudit(adminId, 'manual_backup', 'database', 'pakservices.db', `Created backup ${result.filename} (${(result.size / 1024).toFixed(1)} KB)`);
+    return res.json({
+      success: true,
+      message: `Database backup created successfully: ${result.filename}`,
+      backup: result
+    });
+  } else {
+    return res.status(500).json({ error: 'Failed to create database backup snapshot.' });
+  }
+});
+
+// 3. List all stored backup snapshots
+adminRouter.get('/database/backups', (req: AuthRequest, res: Response) => {
+  const backups = listDatabaseBackups();
+  return res.json({ backups });
+});
+
+// 4. Download live SQLite production database file
+adminRouter.get('/database/download', (req: AuthRequest, res: Response) => {
+  if (!fs.existsSync(DB_PATH)) {
+    return res.status(404).json({ error: 'Database file not found on server.' });
+  }
+
+  // Checkpoint WAL if any
+  try {
+    db.exec('PRAGMA wal_checkpoint(PASSIVE);');
+  } catch {}
+
+  const dateStr = new Date().toISOString().split('T')[0];
+  res.setHeader('Content-Type', 'application/vnd.sqlite3');
+  res.setHeader('Content-Disposition', `attachment; filename="pakservices_database_live_${dateStr}.db"`);
+  
+  const fileStream = fs.createReadStream(DB_PATH);
+  return fileStream.pipe(res);
+});
+
+// 5. Download a specific historical backup snapshot
+adminRouter.get('/database/download-backup/:filename', (req: AuthRequest, res: Response) => {
+  const filename = path.basename(req.params.filename); // Sanitize filename
+  const backupDir = getBackupsDirectory();
+  const filePath = path.join(backupDir, filename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Requested backup file not found.' });
+  }
+
+  res.setHeader('Content-Type', 'application/vnd.sqlite3');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  const fileStream = fs.createReadStream(filePath);
+  return fileStream.pipe(res);
+});
+
+// 6. Download full JSON export of all database tables
+adminRouter.get('/database/export-json', (req: AuthRequest, res: Response) => {
+  const fullJson = exportDatabaseJson();
+  const dateStr = new Date().toISOString().split('T')[0];
+
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="pakservices_full_export_${dateStr}.json"`);
+  return res.send(JSON.stringify(fullJson, null, 2));
+});
+
+// 7. Restore database from snapshot or uploaded file
+adminRouter.post('/database/restore', (req: AuthRequest, res: Response) => {
+  const adminId = req.user!.id;
+  const { filename, file_base64 } = req.body;
+
+  try {
+    // Safety check: Take a pre-restore backup first!
+    createDatabaseBackup('pre_restore_safety');
+
+    if (filename) {
+      // Restore from an existing server snapshot
+      const sanitizedFilename = path.basename(filename);
+      const backupDir = getBackupsDirectory();
+      const sourcePath = path.join(backupDir, sanitizedFilename);
+
+      if (!fs.existsSync(sourcePath)) {
+        return res.status(404).json({ error: 'Selected backup file does not exist.' });
+      }
+
+      fs.copyFileSync(sourcePath, DB_PATH);
+      logAudit(adminId, 'restore_database', 'database', sanitizedFilename, `Restored database from snapshot ${sanitizedFilename}`);
+      return res.json({ success: true, message: `Database successfully restored from ${sanitizedFilename}.` });
+    }
+
+    if (file_base64) {
+      // Restore from uploaded base64 data
+      const buffer = Buffer.from(file_base64.replace(/^data:.*,/, ''), 'base64');
+      if (buffer.length < 100) {
+        return res.status(400).json({ error: 'Uploaded file is invalid or too small.' });
+      }
+
+      // Verify SQLite header magic string: 'SQLite format 3\0'
+      const magic = buffer.subarray(0, 16).toString('utf-8');
+      if (!magic.startsWith('SQLite format 3')) {
+        return res.status(400).json({ error: 'Uploaded file is not a valid SQLite database file.' });
+      }
+
+      fs.writeFileSync(DB_PATH, buffer);
+      logAudit(adminId, 'restore_database', 'database', 'uploaded_file', `Restored database from uploaded .db file (${(buffer.length / 1024).toFixed(1)} KB)`);
+      return res.json({ success: true, message: 'Database successfully restored from uploaded file.' });
+    }
+
+    return res.status(400).json({ error: 'Either filename or file_base64 must be provided.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Restore failed: ' + err.message });
+  }
+});
+

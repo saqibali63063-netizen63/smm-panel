@@ -10,8 +10,11 @@ import type {
   Provider,
   Announcement,
   AuditLog,
-  PlatformStats
+  PlatformStats,
+  DatabaseStats,
+  DatabaseBackupItem
 } from '../types/index.ts';
+
 
 const TOKEN_KEY = 'pakservices_token';
 
@@ -361,5 +364,24 @@ export const api = {
 
     getAuditLogs: () =>
       apiRequest<{ logs: AuditLog[] }>('/api/admin/audit-logs'),
+
+    // Database Preservation & Backup APIs
+    getDatabaseStatus: () =>
+      apiRequest<{ stats: DatabaseStats }>('/api/admin/database/status'),
+
+    getDatabaseBackups: () =>
+      apiRequest<{ backups: DatabaseBackupItem[] }>('/api/admin/database/backups'),
+
+    createDatabaseBackup: () =>
+      apiRequest<{ success: boolean; message: string; backup: any }>('/api/admin/database/backup', {
+        method: 'POST'
+      }),
+
+    restoreDatabase: (body: { filename?: string; file_base64?: string }) =>
+      apiRequest<{ success: boolean; message: string }>('/api/admin/database/restore', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      }),
   }
 };
+

@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Production & Local Database files (NEVER commit or overwrite via Git)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+pakservices.db*
+backups/
+data/
+

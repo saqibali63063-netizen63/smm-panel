@@ -11,12 +11,16 @@ import {
   Trash2,
   Plus,
   CreditCard,
-  Sliders
+  Sliders,
+  Database,
+  HardDrive
 } from 'lucide-react';
 import { AdminPaymentMethods } from '../../components/admin/AdminPaymentMethods.tsx';
+import { AdminDatabaseSafety } from '../../components/admin/AdminDatabaseSafety.tsx';
 
 export const AdminSettingsPage: React.FC<{ onNavigate: (view: string) => void }> = () => {
-  const [activeTab, setActiveTab] = useState<'payment_methods' | 'general' | 'announcements' | 'audit' | 'export'>('payment_methods');
+  const [activeTab, setActiveTab] = useState<'payment_methods' | 'general' | 'database' | 'announcements' | 'audit' | 'export'>('payment_methods');
+
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -117,6 +121,7 @@ export const AdminSettingsPage: React.FC<{ onNavigate: (view: string) => void }>
       <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
         {[
           { id: 'payment_methods', label: 'Payment Methods & QR Codes' },
+          { id: 'database', label: '🛡️ Database Safety & Backups' },
           { id: 'general', label: 'Platform & Contact Settings' },
           { id: 'announcements', label: 'Broadcast Announcements' },
           { id: 'export', label: 'Export Data (CSV)' },
@@ -140,6 +145,12 @@ export const AdminSettingsPage: React.FC<{ onNavigate: (view: string) => void }>
       {activeTab === 'payment_methods' && (
         <AdminPaymentMethods />
       )}
+
+      {/* Database Safety & Backups Tab */}
+      {activeTab === 'database' && (
+        <AdminDatabaseSafety />
+      )}
+
 
       {/* General Settings Tab */}
       {activeTab === 'general' && (
