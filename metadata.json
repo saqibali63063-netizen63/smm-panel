@@ -1,0 +1,6 @@
+{
+  "name": "PakServices - Premier SMM Panel & Growth Engine",
+  "description": "Full-stack Social Media Marketing (SMM) reseller panel with multi-platform ordering, Easypaisa/JazzCash payments, provider API integration, and comprehensive admin suite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
