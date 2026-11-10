@@ -372,7 +372,7 @@ function seedInitialData() {
     { key: 'usdt_trc20_qr', value: '' },
     { key: 'usdt_trc20_instructions', value: 'Transfer USDT only via TRON (TRC20) network. Ensure transaction is confirmed before submitting hash.' },
     
-    { key: 'support_whatsapp', value: '+92 312 3456789' },
+    { key: 'support_whatsapp', value: '+92 341 7208670' },
     { key: 'support_telegram', value: '@PakServicesOfficial' },
     { key: 'support_email', value: 'support@pakservices.com' },
     { key: 'min_deposit_pkr', value: '100' }

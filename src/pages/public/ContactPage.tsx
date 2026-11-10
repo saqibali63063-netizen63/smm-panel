@@ -81,11 +81,11 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onNavigate }) => {
                 </div>
                 <div>
                   <div className="text-xs font-bold text-white">WhatsApp Helpline</div>
-                  <div className="text-[11px] text-slate-400 font-mono">+92 312 3456789</div>
+                  <div className="text-[11px] text-slate-400 font-mono">+92 341 7208670</div>
                 </div>
               </div>
               <a
-                href="https://wa.me/923123456789"
+                href="https://wa.me/923417208670?text=Assalam%20o%20Alaikum%20PakServices%20Support%2C%20mujhe%20website%20par%20help%20chahiye."
                 target="_blank"
                 rel="noreferrer"
                 className="px-3 py-1 rounded bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600 hover:text-white transition-colors text-xs font-semibold"

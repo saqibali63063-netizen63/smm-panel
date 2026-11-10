@@ -610,7 +610,7 @@ function seedInitialData() {
 		},
 		{
 			key: "support_whatsapp",
-			value: "+92 312 3456789"
+			value: "+92 341 7208670"
 		},
 		{
 			key: "support_telegram",

@@ -5,6 +5,7 @@ import { Header } from './components/layout/Header.tsx';
 import { Footer } from './components/layout/Footer.tsx';
 import { UserLayout } from './components/layout/UserLayout.tsx';
 import { AdminLayout } from './components/layout/AdminLayout.tsx';
+import { FloatingWhatsAppButton } from './components/common/FloatingWhatsAppButton.tsx';
 
 // Public Pages
 import { HomePage } from './pages/public/HomePage.tsx';
@@ -205,6 +206,7 @@ export default function App() {
     <AuthProvider>
       <ThemeProvider>
         <AppContent />
+        <FloatingWhatsAppButton />
       </ThemeProvider>
     </AuthProvider>
   );
