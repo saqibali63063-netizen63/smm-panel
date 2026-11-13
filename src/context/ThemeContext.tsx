@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ThemeMode } from '../types/index.ts';
 import { api } from '../lib/api.ts';
-import { useAuth } from './AuthContext.tsx';
 
 export interface ThemeConfig {
   id: ThemeMode;
@@ -21,8 +20,8 @@ export const THEME_CONFIGS: Record<ThemeMode, ThemeConfig> = {
     id: 'midnight',
     name: 'Midnight Pro',
     tagline: 'Dark Navy & Electric Blue',
-    description: 'Deep navy background, electric blue accents, premium dark cards, and wholesale typography.',
-    badge: 'Default',
+    description: 'Deep navy background, electric blue accents, premium dark cards, modern sidebar, and wholesale typography.',
+    badge: 'Executive Dark',
     primaryColor: '#0284c7',
     accentColor: '#38bdf8',
     bgColor: '#080d1a',
@@ -33,8 +32,8 @@ export const THEME_CONFIGS: Record<ThemeMode, ThemeConfig> = {
     id: 'crystal',
     name: 'Crystal Light',
     tagline: 'Pure White & Sky Blue',
-    description: 'Pure white background, sky blue accents, clean light cards, minimal shadows, and crisp legibility.',
-    badge: 'Daylight',
+    description: 'Clean white background, sky blue accents, crisp light cards, minimal shadows, and high-legibility daylight styling.',
+    badge: 'Daylight Clean',
     primaryColor: '#0284c7',
     accentColor: '#0ea5e9',
     bgColor: '#f8fafc',
@@ -45,8 +44,8 @@ export const THEME_CONFIGS: Record<ThemeMode, ThemeConfig> = {
     id: 'neon',
     name: 'Neon Galaxy',
     tagline: 'Obsidian Black & Cyber Neon',
-    description: 'Deep cyber obsidian black, purple and neon cyan gradients, futuristic glowing borders, and animations.',
-    badge: 'Futuristic',
+    description: 'Deep black background, purple and neon cyan gradients, glowing borders, and subtle cyber animations.',
+    badge: 'Cyber Gradient',
     primaryColor: '#8b5cf6',
     accentColor: '#06b6d4',
     bgColor: '#05050b',
@@ -57,7 +56,9 @@ export const THEME_CONFIGS: Record<ThemeMode, ThemeConfig> = {
 
 interface ThemeContextType {
   theme: ThemeMode;
-  setTheme: (newTheme: ThemeMode, persist?: boolean) => Promise<void>;
+  activeTheme: ThemeMode;
+  applyGlobalTheme: (newTheme: ThemeMode) => Promise<void>;
+  refreshGlobalTheme: () => Promise<void>;
   previewTheme: (newTheme: ThemeMode) => void;
   cancelPreview: () => void;
   confirmPreview: () => Promise<void>;
@@ -68,29 +69,25 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'pakservices_theme';
+const STORAGE_KEY = 'pakservices_global_theme';
+
+function isValidTheme(val: any): val is ThemeMode {
+  return val === 'midnight' || val === 'crystal' || val === 'neon';
+}
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
-
-  // Initial theme from user profile or localStorage or default to 'midnight'
-  const getInitialTheme = (): ThemeMode => {
-    const saved = localStorage.getItem(STORAGE_KEY) as ThemeMode;
-    if (saved && (saved === 'midnight' || saved === 'crystal' || saved === 'neon')) {
-      return saved;
-    }
-    return 'midnight';
+  const getCachedTheme = (): ThemeMode => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return isValidTheme(saved) ? saved : 'midnight';
   };
 
-  const [activeTheme, setActiveTheme] = useState<ThemeMode>(getInitialTheme);
+  const [activeTheme, setActiveTheme] = useState<ThemeMode>(getCachedTheme);
   const [previewedTheme, setPreviewedTheme] = useState<ThemeMode | null>(null);
 
-  // Apply theme attribute to document root & body
-  const applyThemeToDOM = (t: ThemeMode) => {
+  const applyThemeToDOM = useCallback((t: ThemeMode) => {
     document.documentElement.setAttribute('data-theme', t);
     document.body.setAttribute('data-theme', t);
 
-    // Update meta theme-color for mobile browser address bars
     let metaThemeColor = document.querySelector('meta[name="theme-color"]');
     if (!metaThemeColor) {
       metaThemeColor = document.createElement('meta');
@@ -99,56 +96,60 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
     const color = THEME_CONFIGS[t]?.bgColor || '#080d1a';
     metaThemeColor.setAttribute('content', color);
-  };
+  }, []);
 
-  // Sync with user's saved preference when logged in
-  useEffect(() => {
-    if (user?.theme && (user.theme === 'midnight' || user.theme === 'crystal' || user.theme === 'neon')) {
-      if (user.theme !== activeTheme) {
-        setActiveTheme(user.theme);
-        localStorage.setItem(STORAGE_KEY, user.theme);
+  const refreshGlobalTheme = useCallback(async () => {
+    try {
+      const res = await api.getGlobalTheme();
+      if (isValidTheme(res.theme)) {
+        setActiveTheme(res.theme);
+        localStorage.setItem(STORAGE_KEY, res.theme);
       }
+    } catch {
+      // Keep cached/default theme on transient network error
     }
-  }, [user?.theme]);
+  }, []);
 
-  // Whenever activeTheme changes (and not previewing), apply to DOM
+  // Load authoritative global theme from backend on mount & window focus
+  useEffect(() => {
+    refreshGlobalTheme();
+    const handleFocus = () => {
+      refreshGlobalTheme();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [refreshGlobalTheme]);
+
+  // Apply active or previewed theme to DOM whenever changed
   useEffect(() => {
     const current = previewedTheme || activeTheme;
     applyThemeToDOM(current);
-  }, [activeTheme, previewedTheme]);
+  }, [activeTheme, previewedTheme, applyThemeToDOM]);
 
-  // Set theme permanently (updates state, localStorage, and database if user logged in)
-  const setTheme = async (newTheme: ThemeMode, persist = true) => {
-    setActiveTheme(newTheme);
+  // Admin-only persistent global theme update
+  const applyGlobalTheme = async (newTheme: ThemeMode) => {
+    const res = await api.admin.setGlobalTheme(newTheme);
+    const savedTheme = isValidTheme(res.theme) ? res.theme : newTheme;
+    setActiveTheme(savedTheme);
     setPreviewedTheme(null);
-    localStorage.setItem(STORAGE_KEY, newTheme);
-    applyThemeToDOM(newTheme);
-
-    if (persist && user) {
-      try {
-        await api.updateTheme(newTheme);
-      } catch (e) {
-        // Silent fail on network error, local persistence still works
-      }
-    }
+    localStorage.setItem(STORAGE_KEY, savedTheme);
+    applyThemeToDOM(savedTheme);
   };
 
-  // Temporary Live Preview
+  // Admin local live preview before saving globally
   const previewTheme = (tempTheme: ThemeMode) => {
     setPreviewedTheme(tempTheme);
     applyThemeToDOM(tempTheme);
   };
 
-  // Revert preview back to saved active theme
   const cancelPreview = () => {
     setPreviewedTheme(null);
     applyThemeToDOM(activeTheme);
   };
 
-  // Confirm and apply the previewed theme
   const confirmPreview = async () => {
     if (previewedTheme) {
-      await setTheme(previewedTheme, true);
+      await applyGlobalTheme(previewedTheme);
     }
   };
 
@@ -156,7 +157,9 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     <ThemeContext.Provider
       value={{
         theme: previewedTheme || activeTheme,
-        setTheme,
+        activeTheme,
+        applyGlobalTheme,
+        refreshGlobalTheme,
         previewTheme,
         cancelPreview,
         confirmPreview,

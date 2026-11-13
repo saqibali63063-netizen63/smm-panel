@@ -3,16 +3,17 @@ import type {
   Category,
   Service,
   Order,
+  OrderSequenceInfo,
   Transaction,
   PaymentRequest,
   SupportTicket,
   TicketMessage,
-  Provider,
   Announcement,
   AuditLog,
   PlatformStats,
   DatabaseStats,
-  DatabaseBackupItem
+  DatabaseBackupItem,
+  ThemeMode
 } from '../types/index.ts';
 
 
@@ -88,27 +89,19 @@ export const api = {
       body: JSON.stringify(body)
     }),
 
-  updateProfile: (body: { timezone?: string; currency?: string; theme?: string }) =>
+  updateProfile: (body: { timezone?: string; currency?: string }) =>
     apiRequest<{ success: boolean; message: string }>('/api/auth/profile', {
       method: 'PUT',
       body: JSON.stringify(body)
     }),
 
-  updateTheme: (theme: string) =>
-    apiRequest<{ success: boolean; theme: string; message: string }>('/api/user/theme', {
-      method: 'PUT',
-      body: JSON.stringify({ theme })
-    }),
+  getGlobalTheme: () =>
+    apiRequest<{ theme: ThemeMode }>('/api/theme'),
 
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     apiRequest<{ success: boolean; message: string }>('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify(body)
-    }),
-
-  regenerateApiKey: () =>
-    apiRequest<{ api_key: string; message: string }>('/api/auth/regenerate-api-key', {
-      method: 'POST'
     }),
 
   // Services & Categories
@@ -264,10 +257,33 @@ export const api = {
       return apiRequest<{ orders: Order[] }>(`/api/admin/orders?${query.toString()}`);
     },
 
+    createOrder: (body: {
+      user_id: number;
+      service_id: number;
+      link: string;
+      quantity: number;
+      delivery_contact?: string;
+      deduct_balance?: boolean;
+      status?: string;
+    }) =>
+      apiRequest<{ success: boolean; order_id: number; charge: number; message: string }>('/api/admin/orders', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      }),
+
     updateOrderStatus: (orderId: number, body: { status: string; start_count?: number; remains?: number }) =>
       apiRequest<{ success: boolean; message: string }>(`/api/admin/orders/${orderId}/status`, {
         method: 'PUT',
         body: JSON.stringify(body)
+      }),
+
+    getOrderSequence: () =>
+      apiRequest<OrderSequenceInfo>('/api/admin/order-sequence'),
+
+    updateOrderSequence: (next_order_id: number) =>
+      apiRequest<{ success: boolean; next_order_id: number; max_order_id: number; total_orders: number; message: string }>('/api/admin/order-sequence', {
+        method: 'PUT',
+        body: JSON.stringify({ next_order_id })
       }),
 
     getCategories: () =>
@@ -371,18 +387,13 @@ export const api = {
     getTickets: (status?: string) =>
       apiRequest<{ tickets: SupportTicket[] }>(`/api/admin/tickets${status ? `?status=${status}` : ''}`),
 
-    getProviders: () =>
-      apiRequest<{ providers: Provider[] }>('/api/admin/providers'),
+    getGlobalTheme: () =>
+      apiRequest<{ theme: ThemeMode }>('/api/admin/theme'),
 
-    createProvider: (body: { name: string; api_url: string; api_key: string }) =>
-      apiRequest<{ success: boolean; message: string }>('/api/admin/providers', {
-        method: 'POST',
-        body: JSON.stringify(body)
-      }),
-
-    testProviderBalance: (id: number) =>
-      apiRequest<{ success: boolean; balance: string; currency: string; message: string }>(`/api/admin/providers/${id}/test-balance`, {
-        method: 'POST'
+    setGlobalTheme: (theme: ThemeMode) =>
+      apiRequest<{ success: boolean; theme: ThemeMode; message: string }>('/api/admin/theme', {
+        method: 'PUT',
+        body: JSON.stringify({ theme })
       }),
 
     getSettings: () =>

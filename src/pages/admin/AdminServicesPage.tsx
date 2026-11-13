@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../lib/api.ts';
-import type { Category, Service, Provider } from '../../types/index.ts';
+import type { Category, Service } from '../../types/index.ts';
 import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
 import { isSimDetailsCategory, isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 import {
@@ -13,20 +13,14 @@ import {
   AlertTriangle,
   FolderTree,
   Filter,
-  Layers,
-  CheckSquare,
-  Square,
   Power,
   PowerOff,
   FolderInput,
   ShieldAlert,
   X,
   RefreshCw,
-  Server,
-  ArrowUpDown,
   ChevronLeft,
-  ChevronRight,
-  Sparkles
+  ChevronRight
 } from 'lucide-react';
 
 interface AdminServicesPageProps {
@@ -36,7 +30,6 @@ interface AdminServicesPageProps {
 export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate }) => {
   const [services, setServices] = useState<Service[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Filters & Search
@@ -79,8 +72,6 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
   const [formRefill, setFormRefill] = useState(true);
   const [formCancel, setFormCancel] = useState(false);
   const [formStatus, setFormStatus] = useState<'active' | 'inactive'>('active');
-  const [formProvId, setFormProvId] = useState<string>('none');
-  const [formProvServiceId, setFormProvServiceId] = useState('');
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalSaving, setModalSaving] = useState(false);
 
@@ -90,13 +81,9 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
   const loadData = async () => {
     setLoading(true);
     try {
-      const [servRes, provRes] = await Promise.all([
-        api.admin.getAdminServices(),
-        api.admin.getProviders()
-      ]);
+      const servRes = await api.admin.getAdminServices();
       setServices(servRes.services);
       setCategories(servRes.categories);
-      setProviders(provRes.providers);
 
       if (servRes.categories.length > 0 && !formCatId) {
         setFormCatId(servRes.categories[0].id);
@@ -131,8 +118,6 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
     setFormRefill(true);
     setFormCancel(false);
     setFormStatus('active');
-    setFormProvId('none');
-    setFormProvServiceId('');
     setModalError(null);
     setServiceModalOpen(true);
   };
@@ -150,8 +135,6 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
     setFormRefill(Boolean(s.refill_supported));
     setFormCancel(Boolean(s.cancel_supported));
     setFormStatus(s.status === 'inactive' ? 'inactive' : 'active');
-    setFormProvId(s.provider_id ? String(s.provider_id) : 'none');
-    setFormProvServiceId(s.provider_service_id || '');
     setModalError(null);
     setServiceModalOpen(true);
   };
@@ -204,9 +187,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
         description: formDesc.trim(),
         refill_supported: formRefill ? 1 : 0,
         cancel_supported: formCancel ? 1 : 0,
-        status: formStatus,
-        provider_id: formProvId === 'none' ? null : Number(formProvId),
-        provider_service_id: formProvServiceId.trim() || null
+        status: formStatus
       };
 
       if (editingService) {
@@ -268,8 +249,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
       const matchName = s.name.toLowerCase().includes(term);
       const matchId = String(s.id).includes(term);
       const matchCat = (s.category_name || '').toLowerCase().includes(term);
-      const matchProv = (s.provider_name || '').toLowerCase().includes(term);
-      if (!matchName && !matchId && !matchCat && !matchProv) return false;
+      if (!matchName && !matchId && !matchCat) return false;
     }
     return true;
   });
@@ -366,7 +346,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
   // Delete ALL Services (Protected)
   const handleDeleteAllServices = async () => {
     if (deleteAllConfirmText !== 'DELETE ALL') {
-      alert('Please type DELETE ALL to confirm.');
+      showNotification('Please type DELETE ALL to confirm.', 'error');
       return;
     }
     setBulkActionLoading(true);
@@ -401,7 +381,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
             Service Management
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Configure reseller services, wholesale rates, provider mappings, and perform bulk operations.
+            Configure reseller services, wholesale rates, and perform bulk operations.
           </p>
         </div>
 
@@ -464,7 +444,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search by ID, service name, category, or provider..."
+              placeholder="Search by ID, service name, or category..."
               value={searchTerm}
               onChange={(e) => {
                 setSearchTerm(e.target.value);
@@ -591,7 +571,6 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                 <th className="py-3 px-3 w-16">ID</th>
                 <th className="py-3 px-4">Category</th>
                 <th className="py-3 px-4">Service Name</th>
-                <th className="py-3 px-3">Provider</th>
                 <th className="py-3 px-3">Rate / 1k (PKR)</th>
                 <th className="py-3 px-3">Min / Max</th>
                 <th className="py-3 px-3 text-center">Status</th>
@@ -601,7 +580,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
             <tbody className="divide-y divide-slate-800/60 text-slate-200">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="py-14 text-center text-slate-400">
+                  <td colSpan={8} className="py-14 text-center text-slate-400">
                     <div className="flex items-center justify-center gap-2">
                       <RefreshCw className="w-4 h-4 animate-spin text-sky-400" />
                       <span>Loading service catalog...</span>
@@ -610,7 +589,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                 </tr>
               ) : filteredServices.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-14 text-center text-slate-400">
+                  <td colSpan={8} className="py-14 text-center text-slate-400">
                     No services found matching your criteria.
                   </td>
                 </tr>
@@ -677,18 +656,6 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                             </span>
                           ) : null}
                         </div>
-                      </td>
-
-                      {/* Provider */}
-                      <td className="py-3 px-3">
-                        {s.provider_name ? (
-                          <div className="text-[11px] text-slate-300 flex items-center gap-1">
-                            <Server className="w-3 h-3 text-purple-400 shrink-0" />
-                            <span className="truncate max-w-[120px]">{s.provider_name}</span>
-                          </div>
-                        ) : (
-                          <span className="text-[10px] text-slate-500 italic">Manual / Local</span>
-                        )}
                       </td>
 
                       {/* Rate */}
@@ -954,43 +921,6 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                     <option value="Package">Package</option>
                     <option value="Subscriptions">Subscriptions</option>
                   </select>
-                </div>
-              </div>
-
-              {/* Provider Mapping (Optional) */}
-              <div className="p-3.5 rounded-xl bg-black/40 border border-slate-700/60 space-y-3">
-                <div className="text-slate-300 font-medium flex items-center gap-1.5">
-                  <Server className="w-3.5 h-3.5 text-purple-400" />
-                  <span>SMM API Provider Automation (Optional)</span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[11px]">Provider Gateway</label>
-                    <select
-                      value={formProvId}
-                      onChange={(e) => setFormProvId(e.target.value)}
-                      className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-sky-400"
-                    >
-                      <option value="none">Manual Delivery (No Provider)</option>
-                      {providers.map(p => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-400 mb-1 text-[11px]">Provider Service ID</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 1042"
-                      value={formProvServiceId}
-                      onChange={(e) => setFormProvServiceId(e.target.value)}
-                      className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-400"
-                    />
-                  </div>
                 </div>
               </div>
 

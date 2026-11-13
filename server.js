@@ -56,6 +56,52 @@ function resolveDatabasePath() {
 var DB_PATH = resolveDatabasePath();
 console.log(`📁 Connected to database: ${DB_PATH}`);
 var db = new DatabaseSync(DB_PATH);
+db.exec("PRAGMA busy_timeout = 5000;");
+function getGlobalTheme() {
+	const val = db.prepare("SELECT value FROM settings WHERE key = 'global_theme'").get()?.value;
+	if (val === "midnight" || val === "crystal" || val === "neon") return val;
+	return "midnight";
+}
+function setGlobalTheme(theme) {
+	db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('global_theme', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(theme);
+	return theme;
+}
+function getOrderSequenceInfo() {
+	const stats = db.prepare("SELECT COALESCE(MAX(id), 0) as max_id, COUNT(*) as total FROM orders").get();
+	const row = db.prepare("SELECT value FROM settings WHERE key = 'next_order_id'").get();
+	let nextId = row ? parseInt(row.value, 10) : stats.max_id + 1;
+	if (!Number.isInteger(nextId) || nextId < 1) nextId = stats.max_id + 1;
+	const existsStmt = db.prepare("SELECT 1 FROM orders WHERE id = ?");
+	while (existsStmt.get(nextId)) nextId++;
+	return {
+		next_order_id: nextId,
+		max_order_id: stats.max_id || 0,
+		total_orders: stats.total || 0
+	};
+}
+function setNextOrderId(nextId) {
+	db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('next_order_id', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(nextId));
+	return nextId;
+}
+function allocateNextOrderId() {
+	const row = db.prepare("SELECT value FROM settings WHERE key = 'next_order_id'").get();
+	const maxRow = db.prepare("SELECT COALESCE(MAX(id), 0) as max_id FROM orders").get();
+	let candidate = row ? parseInt(row.value, 10) : maxRow.max_id + 1;
+	if (!Number.isInteger(candidate) || candidate < 1) candidate = maxRow.max_id + 1;
+	const existsStmt = db.prepare("SELECT 1 FROM orders WHERE id = ?");
+	while (existsStmt.get(candidate)) candidate++;
+	db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('next_order_id', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(candidate + 1));
+	return candidate;
+}
 function hashPassword(password) {
 	const salt = crypto.randomBytes(16).toString("hex");
 	return `${salt}:${crypto.pbkdf2Sync(password, salt, 1e3, 64, "sha512").toString("hex")}`;
@@ -71,9 +117,6 @@ function verifyPassword(password, storedHash) {
 }
 function generateToken() {
 	return crypto.randomBytes(32).toString("hex");
-}
-function generateApiKey() {
-	return "pak_" + crypto.randomBytes(24).toString("hex");
 }
 function generateReferralCode() {
 	return "PAK" + crypto.randomBytes(4).toString("hex").toUpperCase();
@@ -442,17 +485,15 @@ function seedInitialData() {
 	}
 	const now = (/* @__PURE__ */ new Date()).toISOString();
 	const adminHash = hashPassword("admin123");
-	const adminApiKey = generateApiKey();
 	db.prepare(`
-      INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run("admin@pakservices.com", "admin", adminHash, "admin", 5e4, 0, "active", adminApiKey, "PAKADMIN", now);
+      INSERT INTO users (email, username, password_hash, role, balance, spent, status, referral_code, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("admin@pakservices.com", "admin", adminHash, "admin", 5e4, 0, "active", "PAKADMIN", now);
 	const userHash = hashPassword("user123");
-	const userApiKey = generateApiKey();
 	db.prepare(`
-      INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run("user@pakservices.com", "demo_reseller", userHash, "user", 4500, 1250, "active", userApiKey, "PAKRESELL", now);
+      INSERT INTO users (email, username, password_hash, role, balance, spent, status, referral_code, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("user@pakservices.com", "demo_reseller", userHash, "user", 4500, 1250, "active", "PAKRESELL", now);
 	db.prepare(`
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
       VALUES (2, 'deposit', 5000.0, 5000.0, 'Initial JazzCash Deposit - Welcome Credit', 'TRX-98218731', ?)
@@ -466,11 +507,11 @@ function seedInitialData() {
 	const twoDaysAgo = (/* @__PURE__ */ new Date(Date.now() - 1728e5)).toISOString();
 	db.prepare(`
       INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Auto', ?, ?)
+      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Manual', ?, ?)
     `).run(twoDaysAgo, twoDaysAgo);
 	db.prepare(`
       INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Auto', ?, ?)
+      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Manual', ?, ?)
     `).run(yesterday, yesterday);
 	db.prepare(`
       INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
@@ -744,10 +785,7 @@ function ensureDefaultSettings() {
     `);
 		for (const s of initialServices) insertServ.run(s.cat, s.name, s.rate, s.min, s.max, s.desc);
 	}
-	if (db.prepare("SELECT COUNT(*) as count FROM providers").get().count === 0) db.prepare(`
-      INSERT INTO providers (name, api_url, api_key, status, balance, currency, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run("Global SMM Master Gateway", "https://api.globalsmm.demo/v2", "prov_live_sec_8917238129", "active", "384.20", "USD", (/* @__PURE__ */ new Date()).toISOString());
+	const maxOrderRow = db.prepare("SELECT COALESCE(MAX(id), 0) as max_id FROM orders").get();
 	const settingsList = [
 		{
 			key: "site_name",
@@ -768,6 +806,14 @@ function ensureDefaultSettings() {
 		{
 			key: "referral_percent",
 			value: "5.0"
+		},
+		{
+			key: "global_theme",
+			value: "midnight"
+		},
+		{
+			key: "next_order_id",
+			value: String(Math.max(1, (maxOrderRow?.max_id || 0) + 1))
 		},
 		{
 			key: "easypaisa_enabled",
@@ -924,7 +970,7 @@ function removeSession(token) {
 function getUserByToken(token) {
 	if (!token) return null;
 	const session = db.prepare(`
-    SELECT s.expires_at, u.id, u.email, u.username, u.role, u.balance, u.spent, u.status, u.api_key, u.referral_code, u.created_at, u.timezone, u.currency
+    SELECT s.expires_at, u.id, u.email, u.username, u.role, u.balance, u.spent, u.status, u.referral_code, u.created_at, u.timezone, u.currency
     FROM sessions s
     JOIN users u ON s.user_id = u.id
     WHERE s.token = ?
@@ -943,7 +989,6 @@ function getUserByToken(token) {
 		balance: session.balance,
 		spent: session.spent,
 		status: session.status,
-		api_key: session.api_key,
 		referral_code: session.referral_code,
 		created_at: session.created_at,
 		timezone: session.timezone,
@@ -1059,6 +1104,9 @@ function validateDeliveryContact(rawInput) {
 }
 // server/routes/user.ts
 var userRouter = Router();
+userRouter.get("/theme", (_req, res) => {
+	return res.json({ theme: getGlobalTheme() });
+});
 userRouter.post("/auth/register", (req, res) => {
 	const { username, email, password, referral_code } = req.body;
 	if (!username || !email || !password) return res.status(400).json({ error: "Username, email, and password are required." });
@@ -1073,14 +1121,13 @@ userRouter.post("/auth/register", (req, res) => {
 		if (refUser) referrerId = refUser.id;
 	}
 	const passwordHash = hashPassword(password);
-	const apiKey = generateApiKey();
 	const userReferralCode = generateReferralCode();
 	const now = (/* @__PURE__ */ new Date()).toISOString();
 	try {
 		const result = db.prepare(`
-      INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, referred_by, created_at)
-      VALUES (?, ?, ?, 'user', 0.0, 0.0, 'active', ?, ?, ?, ?)
-    `).run(cleanEmail, cleanUser, passwordHash, apiKey, userReferralCode, referrerId, now);
+      INSERT INTO users (email, username, password_hash, role, balance, spent, status, referral_code, referred_by, created_at)
+      VALUES (?, ?, ?, 'user', 0.0, 0.0, 'active', ?, ?, ?)
+    `).run(cleanEmail, cleanUser, passwordHash, userReferralCode, referrerId, now);
 		const userId = Number(result.lastInsertRowid);
 		const token = createSession(userId);
 		const user = {
@@ -1091,12 +1138,10 @@ userRouter.post("/auth/register", (req, res) => {
 			balance: 0,
 			spent: 0,
 			status: "active",
-			api_key: apiKey,
 			referral_code: userReferralCode,
 			created_at: now,
 			timezone: "Asia/Karachi",
-			currency: "PKR",
-			theme: "midnight"
+			currency: "PKR"
 		};
 		return res.status(201).json({
 			token,
@@ -1128,19 +1173,17 @@ userRouter.post("/auth/login", (req, res) => {
 			balance: user.balance,
 			spent: user.spent,
 			status: user.status,
-			api_key: user.api_key,
 			referral_code: user.referral_code,
 			created_at: user.created_at,
 			timezone: user.timezone,
-			currency: user.currency,
-			theme: user.theme || "midnight"
+			currency: user.currency
 		},
 		message: "Login successful"
 	});
 });
 userRouter.get("/auth/me", requireAuth, (req, res) => {
 	const user = db.prepare(`
-    SELECT id, email, username, role, balance, spent, status, api_key, referral_code, created_at, timezone, currency, COALESCE(theme, 'midnight') as theme
+    SELECT id, email, username, role, balance, spent, status, referral_code, created_at, timezone, currency
     FROM users
     WHERE id = ?
   `).get(req.user.id);
@@ -1186,32 +1229,17 @@ userRouter.post("/auth/reset-password", (req, res) => {
 	});
 });
 userRouter.put("/auth/profile", requireAuth, (req, res) => {
-	const { timezone, currency, theme } = req.body;
+	const { timezone, currency } = req.body;
 	const user = req.user;
 	db.prepare(`
     UPDATE users
     SET timezone = COALESCE(?, timezone),
-        currency = COALESCE(?, currency),
-        theme = COALESCE(?, theme)
+        currency = COALESCE(?, currency)
     WHERE id = ?
-  `).run(timezone || null, currency || null, theme || null, user.id);
+  `).run(timezone || null, currency || null, user.id);
 	return res.json({
 		success: true,
 		message: "Profile updated successfully."
-	});
-});
-userRouter.put("/user/theme", requireAuth, (req, res) => {
-	const { theme } = req.body;
-	if (!theme || ![
-		"midnight",
-		"crystal",
-		"neon"
-	].includes(theme)) return res.status(400).json({ error: "Valid theme must be midnight, crystal, or neon" });
-	db.prepare("UPDATE users SET theme = ? WHERE id = ?").run(theme, req.user.id);
-	return res.json({
-		success: true,
-		theme,
-		message: "Theme saved to database profile."
 	});
 });
 userRouter.post("/auth/change-password", requireAuth, (req, res) => {
@@ -1224,14 +1252,6 @@ userRouter.post("/auth/change-password", requireAuth, (req, res) => {
 	return res.json({
 		success: true,
 		message: "Password changed successfully."
-	});
-});
-userRouter.post("/auth/regenerate-api-key", requireAuth, (req, res) => {
-	const newKey = generateApiKey();
-	db.prepare("UPDATE users SET api_key = ? WHERE id = ?").run(newKey, req.user.id);
-	return res.json({
-		api_key: newKey,
-		message: "New API key generated successfully."
 	});
 });
 userRouter.get("/services", (req, res) => {
@@ -1349,11 +1369,11 @@ userRouter.post("/orders", requireAuth, (req, res) => {
 			return res.status(400).json({ error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(freshUser?.balance || 0).toFixed(2)}. Please Add Funds.` });
 		}
 		const newBalance = db.prepare("SELECT balance FROM users WHERE id = ?").get(userId).balance;
-		const orderRes = db.prepare(`
-      INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-    `).run(userId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
-		const orderId = Number(orderRes.lastInsertRowid);
+		const orderId = allocateNextOrderId();
+		db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Manual', ?, ?)
+    `).run(orderId, userId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
 		db.prepare(`
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
       VALUES (?, 'order', ?, ?, ?, ?, ?)
@@ -1447,16 +1467,30 @@ userRouter.post("/orders/mass", requireAuth, (req, res) => {
 			continue;
 		}
 		const now = (/* @__PURE__ */ new Date()).toISOString();
-		const newBal = parseFloat((user.balance - charge).toFixed(2));
-		const newSpent = parseFloat((user.spent + charge).toFixed(2));
-		db.exec("BEGIN TRANSACTION");
+		db.exec("BEGIN IMMEDIATE TRANSACTION");
 		try {
-			db.prepare("UPDATE users SET balance = ?, spent = ? WHERE id = ?").run(newBal, newSpent, userId);
-			const resOrder = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(userId, service.id, link, finalDelivery, finalQty, charge, finalQty, now, now);
-			const oId = Number(resOrder.lastInsertRowid);
+			if (db.prepare(`
+        UPDATE users
+        SET balance = ROUND(balance - ?, 2),
+            spent = ROUND(spent + ?, 2)
+        WHERE id = ? AND balance >= ?
+      `).run(charge, charge, userId, charge).changes !== 1) {
+				db.exec("ROLLBACK");
+				user.balance = db.prepare("SELECT balance FROM users WHERE id = ?").get(userId)?.balance || 0;
+				results.push({
+					line: i + 1,
+					error: `Insufficient funds (Requires Rs ${charge})`
+				});
+				continue;
+			}
+			const updatedUser = db.prepare("SELECT balance, spent FROM users WHERE id = ?").get(userId);
+			const newBal = updatedUser.balance;
+			const newSpent = updatedUser.spent;
+			const oId = allocateNextOrderId();
+			db.prepare(`
+        INSERT INTO orders (id, user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Manual', ?, ?)
+      `).run(oId, userId, service.id, link, finalDelivery, finalQty, charge, finalQty, now, now);
 			db.prepare(`
         INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
         VALUES (?, 'order', ?, ?, ?, ?, ?)
@@ -1471,7 +1505,9 @@ userRouter.post("/orders/mass", requireAuth, (req, res) => {
 				charge
 			});
 		} catch (e) {
-			db.exec("ROLLBACK");
+			try {
+				db.exec("ROLLBACK");
+			} catch {}
 			results.push({
 				line: i + 1,
 				error: e.message
@@ -1799,7 +1835,7 @@ adminRouter.get("/overview", (req, res) => {
 adminRouter.get("/users", (req, res) => {
 	const search = (req.query.search || "").toString().trim().toLowerCase();
 	let query = `
-    SELECT id, email, username, role, balance, spent, status, api_key, referral_code, created_at, timezone, currency
+    SELECT id, email, username, role, balance, spent, status, referral_code, created_at, timezone, currency
     FROM users
   `;
 	const params = [];
@@ -1950,6 +1986,92 @@ adminRouter.put("/orders/:id/status", (req, res) => {
 		message: `Order #${orderId} updated to ${status}.`
 	});
 });
+adminRouter.post("/orders", (req, res) => {
+	const adminId = req.user.id;
+	const { user_id, service_id, link, quantity, delivery_contact, deduct_balance, status } = req.body;
+	const targetUserId = parseInt(user_id, 10);
+	const sId = parseInt(service_id, 10);
+	const parsedQty = parseInt(quantity, 10);
+	const cleanLink = (link || "").trim();
+	const cleanDeliveryContact = (delivery_contact || "").trim();
+	const shouldDeduct = deduct_balance !== false;
+	const initialStatus = status && [
+		"Pending",
+		"In progress",
+		"Completed",
+		"Processing"
+	].includes(status) ? status : "Pending";
+	if (!targetUserId || !sId || !cleanLink) return res.status(400).json({ error: "Client user, service, and target input are required." });
+	const targetUser = db.prepare("SELECT id, username, balance, spent FROM users WHERE id = ?").get(targetUserId);
+	if (!targetUser) return res.status(404).json({ error: "Target user not found." });
+	const service = db.prepare(`
+    SELECT s.*, c.name as category_name
+    FROM services s
+    LEFT JOIN categories c ON s.category_id = c.id
+    WHERE s.id = ?
+  `).get(sId);
+	if (!service) return res.status(404).json({ error: "Selected service not found." });
+	const isSimDetails = isSimDetailsCategoryName(service.category_name);
+	let finalTargetInput = cleanLink;
+	let finalDeliveryContact = null;
+	let finalQuantity = parsedQty;
+	let charge = 0;
+	if (isSimDetails) {
+		const simCheck = validateSimDetailsInput(cleanLink);
+		if (!simCheck.valid) return res.status(400).json({ error: simCheck.error });
+		finalTargetInput = simCheck.normalized;
+		const deliveryCheck = validateDeliveryContact(cleanDeliveryContact);
+		if (!deliveryCheck.valid) return res.status(400).json({ error: deliveryCheck.error });
+		finalDeliveryContact = deliveryCheck.normalized;
+		finalQuantity = 1;
+		charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+	} else {
+		if (!parsedQty || isNaN(parsedQty) || parsedQty <= 0) return res.status(400).json({ error: "Please provide a valid quantity." });
+		if (parsedQty < service.min_quantity || parsedQty > service.max_quantity) return res.status(400).json({ error: `Quantity for this service must be between ${service.min_quantity.toLocaleString()} and ${service.max_quantity.toLocaleString()}.` });
+		charge = parseFloat((parsedQty / 1e3 * service.rate_per_1000).toFixed(2));
+	}
+	const now = (/* @__PURE__ */ new Date()).toISOString();
+	db.exec("BEGIN IMMEDIATE TRANSACTION");
+	try {
+		let newBalance = targetUser.balance;
+		if (shouldDeduct) {
+			if (db.prepare(`
+        UPDATE users
+        SET balance = ROUND(balance - ?, 2),
+            spent = ROUND(spent + ?, 2)
+        WHERE id = ? AND balance >= ?
+      `).run(charge, charge, targetUserId, charge).changes !== 1) {
+				db.exec("ROLLBACK");
+				const freshUser = db.prepare("SELECT balance FROM users WHERE id = ?").get(targetUserId);
+				return res.status(400).json({ error: `Client has insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(freshUser?.balance || 0).toFixed(2)}.` });
+			}
+			newBalance = db.prepare("SELECT balance FROM users WHERE id = ?").get(targetUserId).balance;
+		}
+		const orderId = allocateNextOrderId();
+		const remains = initialStatus === "Completed" ? 0 : finalQuantity;
+		db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'Manual', ?, ?)
+    `).run(orderId, targetUserId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, shouldDeduct ? charge : 0, remains, initialStatus, now, now);
+		if (shouldDeduct) db.prepare(`
+        INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
+        VALUES (?, 'order', ?, ?, ?, ?, ?)
+      `).run(targetUserId, -charge, newBalance, `Admin Order #${orderId} - ${service.name}`, `ORD-${orderId}`, now);
+		logAudit(adminId, "admin_create_order", "order", String(orderId), `Created Order #${orderId} for user ${targetUser.username} (Deducted: ${shouldDeduct ? `Rs ${charge}` : "Rs 0"})`);
+		db.exec("COMMIT");
+		return res.status(201).json({
+			success: true,
+			order_id: orderId,
+			charge: shouldDeduct ? charge : 0,
+			message: `Order #${orderId} created for ${targetUser.username}!`
+		});
+	} catch (err) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {}
+		return res.status(500).json({ error: "Admin order creation failed: " + err.message });
+	}
+});
 adminRouter.get("/categories", (req, res) => {
 	const categories = db.prepare(`
     SELECT c.*, COUNT(s.id) as service_count
@@ -2091,10 +2213,9 @@ adminRouter.delete("/categories/:id", (req, res) => {
 });
 adminRouter.get("/services", (req, res) => {
 	const services = db.prepare(`
-    SELECT s.*, c.name as category_name, c.sort_order as category_sort, p.name as provider_name
+    SELECT s.*, c.name as category_name, c.sort_order as category_sort
     FROM services s
     LEFT JOIN categories c ON s.category_id = c.id
-    LEFT JOIN providers p ON s.provider_id = p.id
     ORDER BY c.sort_order ASC, s.id ASC
   `).all();
 	const categories = db.prepare(`
@@ -2110,7 +2231,7 @@ adminRouter.get("/services", (req, res) => {
 	});
 });
 adminRouter.post("/services", (req, res) => {
-	const { category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, provider_id, provider_service_id, status } = req.body;
+	const { category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, status } = req.body;
 	if (!name || !String(name).trim()) return res.status(400).json({ error: "Service name is required." });
 	const catId = Number(category_id);
 	if (isNaN(catId)) return res.status(400).json({ error: "Please select a valid category." });
@@ -2121,13 +2242,11 @@ adminRouter.post("/services", (req, res) => {
 	if (isNaN(minQty) || minQty < 1) return res.status(400).json({ error: "Minimum quantity must be at least 1." });
 	const maxQty = parseInt(max_quantity, 10);
 	if (isNaN(maxQty) || maxQty < minQty) return res.status(400).json({ error: "Maximum quantity must be greater than or equal to minimum quantity." });
-	const provId = provider_id && provider_id !== "none" ? Number(provider_id) : null;
-	const provServId = provider_service_id ? String(provider_service_id).trim() : null;
 	try {
 		const resServ = db.prepare(`
-      INSERT INTO services (category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, provider_id, provider_service_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(catId, String(name).trim(), type ? String(type).trim() : "Default", rate, minQty, maxQty, description ? String(description).trim() : "", refill_supported ? 1 : 0, cancel_supported ? 1 : 0, provId, provServId, status === "inactive" ? "inactive" : "active");
+      INSERT INTO services (category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(catId, String(name).trim(), type ? String(type).trim() : "Default", rate, minQty, maxQty, description ? String(description).trim() : "", refill_supported ? 1 : 0, cancel_supported ? 1 : 0, status === "inactive" ? "inactive" : "active");
 		const newId = Number(resServ.lastInsertRowid);
 		logAudit(req.user.id, "create_service", "service", String(newId), `Created service #${newId} (${name})`);
 		return res.status(201).json({
@@ -2144,7 +2263,7 @@ adminRouter.put("/services/:id", (req, res) => {
 	if (isNaN(id)) return res.status(400).json({ error: "Invalid service ID." });
 	const existing = db.prepare("SELECT * FROM services WHERE id = ?").get(id);
 	if (!existing) return res.status(404).json({ error: `Service #${id} was not found.` });
-	const { category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, provider_id, provider_service_id, status } = req.body;
+	const { category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, status } = req.body;
 	if (name !== void 0 && !String(name).trim()) return res.status(400).json({ error: "Service name cannot be empty." });
 	const finalCatId = category_id !== void 0 ? Number(category_id) : existing.category_id;
 	if (!db.prepare("SELECT id FROM categories WHERE id = ?").get(finalCatId)) return res.status(400).json({ error: `Category #${finalCatId} does not exist.` });
@@ -2160,8 +2279,6 @@ adminRouter.put("/services/:id", (req, res) => {
 	const finalRefill = refill_supported !== void 0 ? refill_supported ? 1 : 0 : existing.refill_supported;
 	const finalCancel = cancel_supported !== void 0 ? cancel_supported ? 1 : 0 : existing.cancel_supported;
 	const finalStatus = status !== void 0 ? String(status) : existing.status;
-	const finalProvId = provider_id !== void 0 ? provider_id && provider_id !== "none" ? Number(provider_id) : null : existing.provider_id;
-	const finalProvServId = provider_service_id !== void 0 ? provider_service_id ? String(provider_service_id).trim() : null : existing.provider_service_id;
 	try {
 		db.prepare(`
       UPDATE services
@@ -2174,17 +2291,14 @@ adminRouter.put("/services/:id", (req, res) => {
           description = ?,
           refill_supported = ?,
           cancel_supported = ?,
-          provider_id = ?,
-          provider_service_id = ?,
           status = ?
       WHERE id = ?
-    `).run(finalCatId, finalName, finalType, finalRate, finalMin, finalMax, finalDesc, finalRefill, finalCancel, finalProvId, finalProvServId, finalStatus, id);
+    `).run(finalCatId, finalName, finalType, finalRate, finalMin, finalMax, finalDesc, finalRefill, finalCancel, finalStatus, id);
 		logAudit(req.user.id, "edit_service", "service", String(id), `Updated service #${id} (${finalName})`);
 		const updated = db.prepare(`
-      SELECT s.*, c.name as category_name, p.name as provider_name
+      SELECT s.*, c.name as category_name
       FROM services s
       LEFT JOIN categories c ON s.category_id = c.id
-      LEFT JOIN providers p ON s.provider_id = p.id
       WHERE s.id = ?
     `).get(id);
 		return res.json({
@@ -2373,37 +2487,41 @@ adminRouter.get("/tickets", (req, res) => {
 	const tickets = db.prepare(query).all(...params);
 	return res.json({ tickets });
 });
-adminRouter.get("/providers", (req, res) => {
-	const safeProviders = db.prepare("SELECT * FROM providers ORDER BY id ASC").all().map((p) => ({
-		...p,
-		api_key_masked: p.api_key ? p.api_key.substring(0, 8) + "••••••••" : ""
-	}));
-	return res.json({ providers: safeProviders });
+adminRouter.get("/order-sequence", (_req, res) => {
+	return res.json(getOrderSequenceInfo());
 });
-adminRouter.post("/providers", (req, res) => {
-	const { name, api_url, api_key } = req.body;
-	if (!name || !api_url || !api_key) return res.status(400).json({ error: "Name, API URL, and API key are required." });
-	const resProv = db.prepare(`
-    INSERT INTO providers (name, api_url, api_key, status, balance, currency, created_at)
-    VALUES (?, ?, ?, 'active', '0.00', 'USD', ?)
-  `).run(name.trim(), api_url.trim(), api_key.trim(), (/* @__PURE__ */ new Date()).toISOString());
-	logAudit(req.user.id, "add_provider", "provider", String(resProv.lastInsertRowid), `Added provider ${name}`);
-	return res.status(201).json({
-		success: true,
-		message: "Provider added successfully."
-	});
-});
-adminRouter.post("/providers/:id/test-balance", (req, res) => {
-	const id = parseInt(req.params.id, 10);
-	const prov = db.prepare("SELECT * FROM providers WHERE id = ?").get(id);
-	if (!prov) return res.status(404).json({ error: "Provider not found." });
-	const simBalance = (Math.random() * 200 + 150).toFixed(2);
-	db.prepare("UPDATE providers SET balance = ? WHERE id = ?").run(simBalance, id);
+adminRouter.put("/order-sequence", (req, res) => {
+	const adminId = req.user.id;
+	const rawNextId = req.body?.next_order_id;
+	const parsed = Number(rawNextId);
+	if (!Number.isInteger(parsed) || parsed < 1) return res.status(400).json({ error: "Next Order ID must be a positive whole number (minimum 1)." });
+	const info = getOrderSequenceInfo();
+	if (db.prepare("SELECT id FROM orders WHERE id = ?").get(parsed) || info.max_order_id > 0 && parsed <= info.max_order_id) return res.status(400).json({ error: `Next Order ID must be greater than your latest existing Order ID (#${info.max_order_id}). Recommended: #${info.max_order_id + 1} or higher.` });
+	setNextOrderId(parsed);
+	logAudit(adminId, "update_next_order_id", "settings", "next_order_id", `Set Next Order ID to #${parsed}`);
 	return res.json({
 		success: true,
-		balance: simBalance,
-		currency: prov.currency || "USD",
-		message: `Provider connection verified! Available balance: $${simBalance}`
+		...getOrderSequenceInfo(),
+		message: `Next Order ID updated to #${parsed}. All newly created orders will start from #${parsed}.`
+	});
+});
+adminRouter.get("/theme", (_req, res) => {
+	return res.json({ theme: getGlobalTheme() });
+});
+adminRouter.put("/theme", (req, res) => {
+	const adminId = req.user.id;
+	const { theme } = req.body;
+	if (!theme || ![
+		"midnight",
+		"crystal",
+		"neon"
+	].includes(theme)) return res.status(400).json({ error: "Valid theme must be midnight, crystal, or neon." });
+	setGlobalTheme(theme);
+	logAudit(adminId, "update_global_theme", "settings", "global_theme", `Applied global website theme: ${theme}`);
+	return res.json({
+		success: true,
+		theme,
+		message: `Global website theme changed to ${theme}. All visitors and users now see this theme.`
 	});
 });
 adminRouter.get("/settings", (req, res) => {
@@ -2566,264 +2684,6 @@ adminRouter.post("/database/restore", (req, res) => {
 		return res.status(500).json({ error: "Restore failed: " + err.message });
 	}
 });
-// server/routes/api-v2.ts
-var apiV2Router = Router();
-async function handleSmmApi(req, res) {
-	const params = {
-		...req.query,
-		...req.body
-	};
-	const key = (params.key || "").trim();
-	const action = (params.action || "").trim().toLowerCase();
-	const logApi = (statusCode, responsePayload, userId, redactLink = false) => {
-		try {
-			const safeParams = redactLink ? {
-				...params,
-				...params.link ? { link: "***REDACTED***" } : {},
-				...params.delivery_contact ? { delivery_contact: "***REDACTED***" } : {}
-			} : params;
-			db.prepare(`
-        INSERT INTO api_logs (user_id, action, request_payload, response_payload, status_code, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(userId || null, action || "unknown", JSON.stringify(safeParams), JSON.stringify(responsePayload), statusCode, (/* @__PURE__ */ new Date()).toISOString());
-		} catch {}
-	};
-	if (!key) {
-		const errorResp = { error: "API key is missing or invalid" };
-		logApi(400, errorResp);
-		return res.status(400).json(errorResp);
-	}
-	const user = db.prepare(`
-    SELECT id, email, username, balance, spent, status
-    FROM users
-    WHERE api_key = ?
-  `).get(key);
-	if (!user || user.status !== "active") {
-		const errorResp = { error: "Invalid API key or account is suspended" };
-		logApi(403, errorResp);
-		return res.status(403).json(errorResp);
-	}
-	if (action === "services") {
-		const formatted = db.prepare(`
-      SELECT s.id as service, s.name, s.type, c.name as category, s.rate_per_1000 as rate,
-             s.min_quantity as min, s.max_quantity as max, s.refill_supported as refill, s.cancel_supported as cancel
-      FROM services s
-      JOIN categories c ON s.category_id = c.id
-      WHERE s.status = 'active'
-      ORDER BY c.sort_order ASC, s.id ASC
-    `).all().map((s) => ({
-			service: s.service,
-			name: s.name,
-			type: s.type || "Default",
-			category: s.category,
-			rate: s.rate.toFixed(2),
-			min: String(s.min),
-			max: String(s.max),
-			refill: Boolean(s.refill),
-			cancel: Boolean(s.cancel)
-		}));
-		logApi(200, { count: formatted.length }, user.id);
-		return res.json(formatted);
-	}
-	if (action === "balance") {
-		const resp = {
-			balance: user.balance.toFixed(2),
-			currency: "PKR"
-		};
-		logApi(200, resp, user.id);
-		return res.json(resp);
-	}
-	if (action === "add") {
-		const serviceId = parseInt(params.service, 10);
-		const link = (params.link || "").trim();
-		const quantity = parseInt(params.quantity, 10);
-		if (!serviceId || !link || !quantity || isNaN(quantity) || quantity <= 0) {
-			const errorResp = { error: "Missing or invalid parameters (service, link, quantity required)" };
-			logApi(400, errorResp, user.id);
-			return res.status(400).json(errorResp);
-		}
-		const service = db.prepare(`
-      SELECT s.id, s.name, s.rate_per_1000, s.min_quantity, s.max_quantity, s.status, c.name as category_name
-      FROM services s
-      LEFT JOIN categories c ON s.category_id = c.id
-      WHERE s.id = ? AND s.status = 'active'
-    `).get(serviceId);
-		if (!service) {
-			const errorResp = { error: "Service not found or currently inactive" };
-			logApi(404, errorResp, user.id);
-			return res.status(404).json(errorResp);
-		}
-		const isSimDetails = isSimDetailsCategoryName(service.category_name);
-		let finalTargetInput = link;
-		let finalDeliveryContact = null;
-		let finalQuantity = quantity;
-		let charge = 0;
-		if (isSimDetails) {
-			const simCheck = validateSimDetailsInput(link);
-			if (!simCheck.valid) {
-				const errorResp = { error: simCheck.error };
-				logApi(400, errorResp, user.id, true);
-				return res.status(400).json(errorResp);
-			}
-			finalTargetInput = simCheck.normalized;
-			if (params.delivery_contact) {
-				const deliveryCheck = validateDeliveryContact(String(params.delivery_contact));
-				if (!deliveryCheck.valid) {
-					const errorResp = { error: deliveryCheck.error };
-					logApi(400, errorResp, user.id, true);
-					return res.status(400).json(errorResp);
-				}
-				finalDeliveryContact = deliveryCheck.normalized;
-			}
-			finalQuantity = 1;
-			charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
-		} else {
-			if (quantity < service.min_quantity || quantity > service.max_quantity) {
-				const errorResp = { error: `Quantity must be between ${service.min_quantity} and ${service.max_quantity}` };
-				logApi(400, errorResp, user.id, isSimDetails);
-				return res.status(400).json(errorResp);
-			}
-			charge = parseFloat((quantity / 1e3 * service.rate_per_1000).toFixed(2));
-		}
-		if (user.balance < charge) {
-			const errorResp = { error: `Insufficient balance. Required: ${charge} PKR, Available: ${user.balance.toFixed(2)} PKR` };
-			logApi(400, errorResp, user.id, isSimDetails);
-			return res.status(400).json(errorResp);
-		}
-		const now = (/* @__PURE__ */ new Date()).toISOString();
-		db.exec("BEGIN IMMEDIATE TRANSACTION");
-		try {
-			if (db.prepare(`
-        UPDATE users
-        SET balance = ROUND(balance - ?, 2),
-            spent = ROUND(spent + ?, 2)
-        WHERE id = ? AND balance >= ?
-      `).run(charge, charge, user.id, charge).changes !== 1) {
-				db.exec("ROLLBACK");
-				const errorResp = { error: `Insufficient balance. Required: ${charge} PKR` };
-				logApi(400, errorResp, user.id, isSimDetails);
-				return res.status(400).json(errorResp);
-			}
-			const newBalance = db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance;
-			const orderId = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(user.id, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now).lastInsertRowid;
-			db.prepare(`
-        INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
-        VALUES (?, 'order', ?, ?, ?, ?, ?)
-      `).run(user.id, -charge, newBalance, `API Order #${orderId} - ${service.name}`, `ORD-${orderId}`, now);
-			db.exec("COMMIT");
-			const successResp = { order: Number(orderId) };
-			logApi(200, successResp, user.id, isSimDetails);
-			return res.json(successResp);
-		} catch (err) {
-			try {
-				db.exec("ROLLBACK");
-			} catch {}
-			const errorResp = { error: "Failed to create order: " + err.message };
-			logApi(500, errorResp, user.id, isSimDetails);
-			return res.status(500).json(errorResp);
-		}
-	}
-	if (action === "status") {
-		if (params.orders) {
-			const orderIds = String(params.orders).split(",").map((id) => parseInt(id.trim(), 10)).filter(Boolean);
-			if (orderIds.length === 0) return res.status(400).json({ error: "Incorrect order ID" });
-			const placeholders = orderIds.map(() => "?").join(",");
-			const rows = db.prepare(`
-        SELECT id, charge, start_count, status, remains
-        FROM orders
-        WHERE id IN (${placeholders}) AND user_id = ?
-      `).all(...orderIds, user.id);
-			const result = {};
-			for (const id of orderIds) {
-				const found = rows.find((r) => r.id === id);
-				if (found) result[String(id)] = {
-					charge: found.charge.toFixed(2),
-					start_count: String(found.start_count),
-					status: found.status,
-					remains: String(found.remains),
-					currency: "PKR"
-				};
-				else result[String(id)] = { error: "Incorrect order ID" };
-			}
-			logApi(200, result, user.id);
-			return res.json(result);
-		}
-		const orderId = parseInt(params.order, 10);
-		if (!orderId) {
-			const errorResp = { error: "Order ID is required" };
-			logApi(400, errorResp, user.id);
-			return res.status(400).json(errorResp);
-		}
-		const order = db.prepare(`
-      SELECT charge, start_count, status, remains
-      FROM orders
-      WHERE id = ? AND user_id = ?
-    `).get(orderId, user.id);
-		if (!order) {
-			const errorResp = { error: "Order not found" };
-			logApi(404, errorResp, user.id);
-			return res.status(404).json(errorResp);
-		}
-		const resp = {
-			charge: order.charge.toFixed(2),
-			start_count: String(order.start_count),
-			status: order.status,
-			remains: String(order.remains),
-			currency: "PKR"
-		};
-		logApi(200, resp, user.id);
-		return res.json(resp);
-	}
-	if (action === "refill") {
-		const orderId = parseInt(params.order, 10);
-		if (!orderId) return res.status(400).json({ error: "Order ID is required" });
-		const order = db.prepare(`
-      SELECT o.id, o.status, s.refill_supported
-      FROM orders o
-      JOIN services s ON o.service_id = s.id
-      WHERE o.id = ? AND o.user_id = ?
-    `).get(orderId, user.id);
-		if (!order) return res.status(404).json({ error: "Order not found" });
-		if (!order.refill_supported) return res.status(400).json({ error: "Refill not supported for this service" });
-		db.prepare(`
-      UPDATE orders
-      SET refill_status = 'Requested', updated_at = ?
-      WHERE id = ?
-    `).run((/* @__PURE__ */ new Date()).toISOString(), orderId);
-		const resp = { refill: orderId };
-		logApi(200, resp, user.id);
-		return res.json(resp);
-	}
-	if (action === "refill_status") {
-		const refillId = parseInt(params.refill, 10);
-		if (!refillId) return res.status(400).json({ error: "Refill ID is required" });
-		const order = db.prepare(`
-      SELECT refill_status
-      FROM orders
-      WHERE id = ? AND user_id = ?
-    `).get(refillId, user.id);
-		if (!order) return res.status(404).json({ error: "Refill ID not found" });
-		const resp = { status: order.refill_status || "Completed" };
-		logApi(200, resp, user.id);
-		return res.json(resp);
-	}
-	if (action === "cancel") {
-		const result = String(params.orders || params.order).split(",").map((id) => parseInt(id.trim(), 10)).filter(Boolean).map((id) => ({
-			order: id,
-			cancel: { error: "Cancel request sent to server" }
-		}));
-		logApi(200, result, user.id);
-		return res.json(result);
-	}
-	const badAction = { error: "Unknown action specified. Supported actions: services, add, status, refill, refill_status, cancel, balance" };
-	logApi(400, badAction, user.id);
-	return res.status(400).json(badAction);
-}
-apiV2Router.get("/", handleSmmApi);
-apiV2Router.post("/", handleSmmApi);
 // server.ts
 dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
@@ -2847,7 +2707,6 @@ async function startServer() {
 		extended: true,
 		limit: "15mb"
 	}));
-	app.use("/api/v2", apiV2Router);
 	app.use("/api", userRouter);
 	app.use("/api/admin", adminRouter);
 	app.get("/api/health", (req, res) => {
@@ -2856,6 +2715,9 @@ async function startServer() {
 			service: "PakServices SMM Engine",
 			timestamp: (/* @__PURE__ */ new Date()).toISOString()
 		});
+	});
+	app.use("/api", (_req, res) => {
+		res.status(404).json({ error: "API endpoint not found" });
 	});
 	if (!isProduction) {
 		const vite = await createServer({

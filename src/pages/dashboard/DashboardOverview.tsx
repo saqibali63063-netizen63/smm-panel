@@ -4,25 +4,16 @@ import { api } from '../../lib/api.ts';
 import type { Order, Announcement } from '../../types/index.ts';
 import {
   Wallet,
-  ShoppingBag,
   Clock,
   CheckCircle2,
   PlusCircle,
   Copy,
   Check,
   TrendingUp,
-  AlertTriangle,
   ArrowRight,
   Info,
-  Layers,
-  LifeBuoy,
-  Palette,
-  Sparkles,
-  Sun,
-  Moon
+  Layers
 } from 'lucide-react';
-import { useTheme } from '../../context/ThemeContext.tsx';
-import type { ThemeMode } from '../../types/index.ts';
 import { isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 
 interface DashboardOverviewProps {
@@ -31,8 +22,6 @@ interface DashboardOverviewProps {
 
 export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate }) => {
   const { user, refreshUser } = useAuth();
-  const { theme, setTheme, configs } = useTheme();
-  const [themeChanging, setThemeChanging] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [copiedRef, setCopiedRef] = useState(false);
@@ -224,69 +213,6 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
           </div>
         </div>
 
-      </div>
-
-      {/* Theme Quick Switcher Banner */}
-      <div className="rounded-xl border border-slate-800 bg-[#090f20] p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center shrink-0">
-            <Palette className="w-5 h-5 text-sky-400" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-white">Dashboard Theme</h3>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30">
-                {configs[theme]?.name || 'Midnight Pro'}
-              </span>
-            </div>
-            <p className="text-xs text-slate-400">
-              Instantly toggle between 3 hand-crafted themes: Midnight Pro, Crystal Light, and Neon Galaxy.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {(['midnight', 'crystal', 'neon'] as ThemeMode[]).map((themeKey) => {
-            const isSelected = theme === themeKey;
-            const c = configs[themeKey];
-            return (
-              <button
-                key={themeKey}
-                type="button"
-                disabled={themeChanging === themeKey}
-                onClick={async () => {
-                  setThemeChanging(themeKey);
-                  try {
-                    await setTheme(themeKey, true);
-                  } finally {
-                    setThemeChanging(null);
-                  }
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 border transition-all cursor-pointer ${
-                  isSelected
-                    ? 'border-sky-500 bg-sky-500/20 text-white shadow-sm ring-1 ring-sky-500/50'
-                    : 'border-slate-800 bg-[#070b16] hover:border-slate-700 text-slate-300 hover:text-white'
-                }`}
-              >
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: c.accentColor }}
-                />
-                <span>{c.name}</span>
-                {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
-              </button>
-            );
-          })}
-
-          <button
-            type="button"
-            onClick={() => onNavigate('profile')}
-            className="px-3 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-sky-400 hover:bg-slate-800/60 transition-colors ml-auto md:ml-2 flex items-center gap-1 cursor-pointer"
-          >
-            <span>Preview All</span>
-            <ArrowRight className="w-3 h-3" />
-          </button>
-        </div>
       </div>
 
       {/* Recent Orders Section */}

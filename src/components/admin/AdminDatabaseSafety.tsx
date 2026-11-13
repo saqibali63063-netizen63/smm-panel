@@ -127,7 +127,7 @@ export const AdminDatabaseSafety: React.FC = () => {
 
   const executeRestore = async () => {
     if (confirmText.trim().toLowerCase() !== 'restore') {
-      alert('Please type RESTORE to confirm.');
+      setMessage({ text: 'Please type RESTORE to confirm.', type: 'error' });
       return;
     }
 

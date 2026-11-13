@@ -22,7 +22,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
               </span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed mb-4">
-              Pakistan's leading wholesale SMM provider platform. Automated social growth for agencies, influencers, creators, and digital resellers worldwide.
+              Pakistan's leading wholesale SMM panel platform. Reliable social growth for agencies, influencers, creators, and digital resellers worldwide.
             </p>
             <div className="flex items-center gap-2 text-xs text-emerald-400 font-medium">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
@@ -42,11 +42,6 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
               <li>
                 <button onClick={() => onNavigate('services')} className="hover:text-sky-400 transition-colors">
                   Wholesale Services List
-                </button>
-              </li>
-              <li>
-                <button onClick={() => onNavigate('api-docs')} className="hover:text-sky-400 transition-colors">
-                  API Documentation (v2)
                 </button>
               </li>
               <li>

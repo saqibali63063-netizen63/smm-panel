@@ -10,9 +10,16 @@ import {
   listDatabaseBackups,
   exportDatabaseJson,
   getBackupsDirectory,
-  getUploadsDirectory
+  getUploadsDirectory,
+  getOrderSequenceInfo,
+  setNextOrderId,
+  allocateNextOrderId,
+  getGlobalTheme,
+  setGlobalTheme,
+  type ThemeMode
 } from '../db.js';
 import { requireAdmin, type AuthRequest } from '../auth.js';
+import { isSimDetailsCategoryName, validateSimDetailsInput, validateDeliveryContact } from '../simDetails.js';
 
 
 
@@ -87,7 +94,7 @@ adminRouter.get('/users', (req: AuthRequest, res: Response) => {
   const search = (req.query.search || '').toString().trim().toLowerCase();
 
   let query = `
-    SELECT id, email, username, role, balance, spent, status, api_key, referral_code, created_at, timezone, currency
+    SELECT id, email, username, role, balance, spent, status, referral_code, created_at, timezone, currency
     FROM users
   `;
   const params: any[] = [];
@@ -269,6 +276,127 @@ adminRouter.put('/orders/:id/status', (req: AuthRequest, res: Response) => {
   logAudit(adminId, 'update_order_status', 'order', String(orderId), `Status changed to ${status}`);
 
   return res.json({ success: true, message: `Order #${orderId} updated to ${status}.` });
+});
+
+// Admin-created Order (uses exact same Next Order ID sequence)
+adminRouter.post('/orders', (req: AuthRequest, res: Response) => {
+  const adminId = req.user!.id;
+  const { user_id, service_id, link, quantity, delivery_contact, deduct_balance, status } = req.body;
+
+  const targetUserId = parseInt(user_id, 10);
+  const sId = parseInt(service_id, 10);
+  const parsedQty = parseInt(quantity, 10);
+  const cleanLink = (link || '').trim();
+  const cleanDeliveryContact = (delivery_contact || '').trim();
+  const shouldDeduct = deduct_balance !== false;
+  const validStatuses = ['Pending', 'In progress', 'Completed', 'Processing'];
+  const initialStatus = status && validStatuses.includes(status) ? status : 'Pending';
+
+  if (!targetUserId || !sId || !cleanLink) {
+    return res.status(400).json({ error: 'Client user, service, and target input are required.' });
+  }
+
+  const targetUser = db.prepare('SELECT id, username, balance, spent FROM users WHERE id = ?').get(targetUserId) as any;
+  if (!targetUser) {
+    return res.status(404).json({ error: 'Target user not found.' });
+  }
+
+  const service = db.prepare(`
+    SELECT s.*, c.name as category_name
+    FROM services s
+    LEFT JOIN categories c ON s.category_id = c.id
+    WHERE s.id = ?
+  `).get(sId) as any;
+
+  if (!service) {
+    return res.status(404).json({ error: 'Selected service not found.' });
+  }
+
+  const isSimDetails = isSimDetailsCategoryName(service.category_name);
+  let finalTargetInput = cleanLink;
+  let finalDeliveryContact: string | null = null;
+  let finalQuantity = parsedQty;
+  let charge = 0;
+
+  if (isSimDetails) {
+    const simCheck = validateSimDetailsInput(cleanLink);
+    if (!simCheck.valid) {
+      return res.status(400).json({ error: simCheck.error });
+    }
+    finalTargetInput = simCheck.normalized;
+
+    const deliveryCheck = validateDeliveryContact(cleanDeliveryContact);
+    if (!deliveryCheck.valid) {
+      return res.status(400).json({ error: deliveryCheck.error });
+    }
+    finalDeliveryContact = deliveryCheck.normalized;
+    finalQuantity = 1;
+    charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+  } else {
+    if (!parsedQty || isNaN(parsedQty) || parsedQty <= 0) {
+      return res.status(400).json({ error: 'Please provide a valid quantity.' });
+    }
+    if (parsedQty < service.min_quantity || parsedQty > service.max_quantity) {
+      return res.status(400).json({
+        error: `Quantity for this service must be between ${service.min_quantity.toLocaleString()} and ${service.max_quantity.toLocaleString()}.`
+      });
+    }
+    charge = parseFloat(((parsedQty / 1000) * service.rate_per_1000).toFixed(2));
+  }
+
+  const now = new Date().toISOString();
+
+  db.exec('BEGIN IMMEDIATE TRANSACTION');
+  try {
+    let newBalance = targetUser.balance;
+    if (shouldDeduct) {
+      const deductRes = db.prepare(`
+        UPDATE users
+        SET balance = ROUND(balance - ?, 2),
+            spent = ROUND(spent + ?, 2)
+        WHERE id = ? AND balance >= ?
+      `).run(charge, charge, targetUserId, charge);
+
+      if (deductRes.changes !== 1) {
+        db.exec('ROLLBACK');
+        const freshUser = db.prepare('SELECT balance FROM users WHERE id = ?').get(targetUserId) as any;
+        return res.status(400).json({
+          error: `Client has insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(freshUser?.balance || 0).toFixed(2)}.`
+        });
+      }
+
+      const updated = db.prepare('SELECT balance FROM users WHERE id = ?').get(targetUserId) as any;
+      newBalance = updated.balance;
+    }
+
+    const orderId = allocateNextOrderId();
+    const remains = initialStatus === 'Completed' ? 0 : finalQuantity;
+
+    db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'Manual', ?, ?)
+    `).run(orderId, targetUserId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, shouldDeduct ? charge : 0, remains, initialStatus, now, now);
+
+    if (shouldDeduct) {
+      db.prepare(`
+        INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
+        VALUES (?, 'order', ?, ?, ?, ?, ?)
+      `).run(targetUserId, -charge, newBalance, `Admin Order #${orderId} - ${service.name}`, `ORD-${orderId}`, now);
+    }
+
+    logAudit(adminId, 'admin_create_order', 'order', String(orderId), `Created Order #${orderId} for user ${targetUser.username} (Deducted: ${shouldDeduct ? `Rs ${charge}` : 'Rs 0'})`);
+    db.exec('COMMIT');
+
+    return res.status(201).json({
+      success: true,
+      order_id: orderId,
+      charge: shouldDeduct ? charge : 0,
+      message: `Order #${orderId} created for ${targetUser.username}!`
+    });
+  } catch (err: any) {
+    try { db.exec('ROLLBACK'); } catch {}
+    return res.status(500).json({ error: 'Admin order creation failed: ' + err.message });
+  }
 });
 
 // ==========================================
@@ -468,13 +596,12 @@ adminRouter.delete('/categories/:id', (req: AuthRequest, res: Response) => {
 // SERVICE MANAGEMENT (COMPREHENSIVELY FIXED & EXPANDED)
 // ==========================================
 
-// Get all services (Admin View: includes inactive, with category & provider names)
+// Get all services (Admin View: includes inactive, with category names)
 adminRouter.get('/services', (req: AuthRequest, res: Response) => {
   const services = db.prepare(`
-    SELECT s.*, c.name as category_name, c.sort_order as category_sort, p.name as provider_name
+    SELECT s.*, c.name as category_name, c.sort_order as category_sort
     FROM services s
     LEFT JOIN categories c ON s.category_id = c.id
-    LEFT JOIN providers p ON s.provider_id = p.id
     ORDER BY c.sort_order ASC, s.id ASC
   `).all() as any[];
 
@@ -501,8 +628,6 @@ adminRouter.post('/services', (req: AuthRequest, res: Response) => {
     description,
     refill_supported,
     cancel_supported,
-    provider_id,
-    provider_service_id,
     status
   } = req.body;
 
@@ -538,13 +663,10 @@ adminRouter.post('/services', (req: AuthRequest, res: Response) => {
     return res.status(400).json({ error: 'Maximum quantity must be greater than or equal to minimum quantity.' });
   }
 
-  const provId = provider_id && provider_id !== 'none' ? Number(provider_id) : null;
-  const provServId = provider_service_id ? String(provider_service_id).trim() : null;
-
   try {
     const resServ = db.prepare(`
-      INSERT INTO services (category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, provider_id, provider_service_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO services (category_id, name, type, rate_per_1000, min_quantity, max_quantity, description, refill_supported, cancel_supported, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       catId,
       String(name).trim(),
@@ -555,8 +677,6 @@ adminRouter.post('/services', (req: AuthRequest, res: Response) => {
       description ? String(description).trim() : '',
       refill_supported ? 1 : 0,
       cancel_supported ? 1 : 0,
-      provId,
-      provServId,
       status === 'inactive' ? 'inactive' : 'active'
     );
 
@@ -568,7 +688,7 @@ adminRouter.post('/services', (req: AuthRequest, res: Response) => {
   }
 });
 
-// Update Service (COMPREHENSIVELY FIXED & TESTED)
+// Update Service
 adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid service ID.' });
@@ -588,8 +708,6 @@ adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
     description,
     refill_supported,
     cancel_supported,
-    provider_id,
-    provider_service_id,
     status
   } = req.body;
 
@@ -625,8 +743,6 @@ adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
   const finalRefill = refill_supported !== undefined ? (refill_supported ? 1 : 0) : existing.refill_supported;
   const finalCancel = cancel_supported !== undefined ? (cancel_supported ? 1 : 0) : existing.cancel_supported;
   const finalStatus = status !== undefined ? String(status) : existing.status;
-  const finalProvId = provider_id !== undefined ? (provider_id && provider_id !== 'none' ? Number(provider_id) : null) : existing.provider_id;
-  const finalProvServId = provider_service_id !== undefined ? (provider_service_id ? String(provider_service_id).trim() : null) : existing.provider_service_id;
 
   try {
     db.prepare(`
@@ -640,8 +756,6 @@ adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
           description = ?,
           refill_supported = ?,
           cancel_supported = ?,
-          provider_id = ?,
-          provider_service_id = ?,
           status = ?
       WHERE id = ?
     `).run(
@@ -654,8 +768,6 @@ adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
       finalDesc,
       finalRefill,
       finalCancel,
-      finalProvId,
-      finalProvServId,
       finalStatus,
       id
     );
@@ -663,10 +775,9 @@ adminRouter.put('/services/:id', (req: AuthRequest, res: Response) => {
     logAudit(req.user!.id, 'edit_service', 'service', String(id), `Updated service #${id} (${finalName})`);
 
     const updated = db.prepare(`
-      SELECT s.*, c.name as category_name, p.name as provider_name
+      SELECT s.*, c.name as category_name
       FROM services s
       LEFT JOIN categories c ON s.category_id = c.id
-      LEFT JOIN providers p ON s.provider_id = p.id
       WHERE s.id = ?
     `).get(id);
 
@@ -922,49 +1033,58 @@ adminRouter.get('/tickets', (req: AuthRequest, res: Response) => {
 });
 
 // ==========================================
-// PROVIDERS MANAGEMENT
+// ORDER NUMBERING SEQUENCE & GLOBAL THEME
 // ==========================================
-adminRouter.get('/providers', (req: AuthRequest, res: Response) => {
-  const providers = db.prepare('SELECT * FROM providers ORDER BY id ASC').all() as any[];
-  // Mask API keys for safe display: e.g. "prov_live_sec_***"
-  const safeProviders = providers.map(p => ({
-    ...p,
-    api_key_masked: p.api_key ? p.api_key.substring(0, 8) + '••••••••' : ''
-  }));
-  return res.json({ providers: safeProviders });
+adminRouter.get('/order-sequence', (_req: AuthRequest, res: Response) => {
+  return res.json(getOrderSequenceInfo());
 });
 
-adminRouter.post('/providers', (req: AuthRequest, res: Response) => {
-  const { name, api_url, api_key } = req.body;
-  if (!name || !api_url || !api_key) {
-    return res.status(400).json({ error: 'Name, API URL, and API key are required.' });
+adminRouter.put('/order-sequence', (req: AuthRequest, res: Response) => {
+  const adminId = req.user!.id;
+  const rawNextId = req.body?.next_order_id;
+  const parsed = Number(rawNextId);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return res.status(400).json({ error: 'Next Order ID must be a positive whole number (minimum 1).' });
   }
 
-  const resProv = db.prepare(`
-    INSERT INTO providers (name, api_url, api_key, status, balance, currency, created_at)
-    VALUES (?, ?, ?, 'active', '0.00', 'USD', ?)
-  `).run(name.trim(), api_url.trim(), api_key.trim(), new Date().toISOString());
+  const info = getOrderSequenceInfo();
+  const collision = db.prepare('SELECT id FROM orders WHERE id = ?').get(parsed) as any;
+  if (collision || (info.max_order_id > 0 && parsed <= info.max_order_id)) {
+    return res.status(400).json({
+      error: `Next Order ID must be greater than your latest existing Order ID (#${info.max_order_id}). Recommended: #${info.max_order_id + 1} or higher.`
+    });
+  }
 
-  logAudit(req.user!.id, 'add_provider', 'provider', String(resProv.lastInsertRowid), `Added provider ${name}`);
-  return res.status(201).json({ success: true, message: 'Provider added successfully.' });
-});
-
-// Test provider balance simulation / check
-adminRouter.post('/providers/:id/test-balance', (req: AuthRequest, res: Response) => {
-  const id = parseInt(req.params.id, 10);
-  const prov = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
-  if (!prov) return res.status(404).json({ error: 'Provider not found.' });
-
-  // In production this would query prov.api_url with prov.api_key via action=balance
-  // For demo/configured providers, simulate real response:
-  const simBalance = (Math.random() * 200 + 150).toFixed(2);
-  db.prepare('UPDATE providers SET balance = ? WHERE id = ?').run(simBalance, id);
+  setNextOrderId(parsed);
+  logAudit(adminId, 'update_next_order_id', 'settings', 'next_order_id', `Set Next Order ID to #${parsed}`);
 
   return res.json({
     success: true,
-    balance: simBalance,
-    currency: prov.currency || 'USD',
-    message: `Provider connection verified! Available balance: $${simBalance}`
+    ...getOrderSequenceInfo(),
+    message: `Next Order ID updated to #${parsed}. All newly created orders will start from #${parsed}.`
+  });
+});
+
+adminRouter.get('/theme', (_req: AuthRequest, res: Response) => {
+  return res.json({ theme: getGlobalTheme() });
+});
+
+adminRouter.put('/theme', (req: AuthRequest, res: Response) => {
+  const adminId = req.user!.id;
+  const { theme } = req.body;
+
+  if (!theme || !['midnight', 'crystal', 'neon'].includes(theme)) {
+    return res.status(400).json({ error: 'Valid theme must be midnight, crystal, or neon.' });
+  }
+
+  setGlobalTheme(theme as ThemeMode);
+  logAudit(adminId, 'update_global_theme', 'settings', 'global_theme', `Applied global website theme: ${theme}`);
+
+  return res.json({
+    success: true,
+    theme,
+    message: `Global website theme changed to ${theme}. All visitors and users now see this theme.`
   });
 });
 

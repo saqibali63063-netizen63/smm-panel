@@ -71,7 +71,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
               </div>
 
               <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-white tracking-tight leading-[1.15] text-balance">
-                Accelerate Social Growth With Direct Wholesale Provider Rates
+                Accelerate Social Growth With Direct Wholesale SMM Rates
               </h1>
 
               <p className="text-base sm:text-lg text-slate-300 leading-relaxed max-w-2xl">
@@ -98,7 +98,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
               {/* Trust markers */}
               <div className="pt-4 flex flex-wrap items-center gap-6 text-xs text-slate-400">
                 <span className="flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Instant API Dispatch
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Direct Order Dispatch
                 </span>
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" /> 30-Day Refill Guarantee
@@ -296,7 +296,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
               Why Top Pakistani Digital Agencies Rely On PakServices
             </h2>
             <p className="text-sm text-slate-300 leading-relaxed">
-              Unlike unstable third-party scripts, PakServices is connected directly to top-tier node providers worldwide with server-level redundancy, strict rate checks, and non-drop guarantee locks.
+              Unlike unstable third-party scripts, PakServices operates dedicated fulfillment infrastructure with strict quality checks, verified Easypaisa/JazzCash deposits, and non-drop guarantee locks.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
@@ -324,9 +324,9 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
                 <div className="w-8 h-8 rounded-lg bg-amber-950 flex items-center justify-center text-amber-400 mb-2">
                   <TrendingUp className="w-4 h-4" />
                 </div>
-                <h3 className="text-sm font-bold text-white mb-1">Standard SMM v2 API</h3>
+                <h3 className="text-sm font-bold text-white mb-1">Real-Time Order Tracking</h3>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Connect your own panel or custom website seamlessly via standard REST actions.
+                  Monitor live order statuses, start counts, and mass order batches cleanly in one dashboard.
                 </p>
               </div>
 
@@ -512,7 +512,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
               {'★'.repeat(5)}
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">
-              "I integrated their API v2 into my custom WordPress reseller portal. Super clean JSON response format, zero downtime, and instant order tracking."
+              "Using Mass Order and live status tracking saves our agency hours every day. Zero downtime, fast support responses, and super reliable PKR pricing."
             </p>
             <div className="pt-2 border-t border-slate-800/80">
               <div className="text-xs font-bold text-white">Zainab Sheikh</div>

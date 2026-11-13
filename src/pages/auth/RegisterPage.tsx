@@ -72,7 +72,7 @@ export const RegisterPage: React.FC<RegisterPageProps> = ({ onNavigate }) => {
           </div>
           <h1 className="text-lg sm:text-xl font-bold text-white">Create Reseller Account</h1>
           <p className="text-xs text-slate-400 max-w-xs mx-auto">
-            Instant registration · Instant wholesale access · Free API key
+            Instant registration · Wholesale PKR rates · 24/7 Support
           </p>
         </div>
 

@@ -7,7 +7,6 @@ import dotenv from 'dotenv';
 import { initDb, getUploadsDirectory } from './server/db.js';
 import { userRouter } from './server/routes/user.js';
 import { adminRouter } from './server/routes/admin.js';
-import { apiV2Router } from './server/routes/api-v2.js';
 
 dotenv.config();
 
@@ -40,8 +39,6 @@ async function startServer() {
 
 
   // Mount API routers
-  // Standard Reseller API v2: /api/v2
-  app.use('/api/v2', apiV2Router);
   // User & Public API: /api
   app.use('/api', userRouter);
   // Admin Panel API: /api/admin
@@ -54,6 +51,11 @@ async function startServer() {
       service: 'PakServices SMM Engine',
       timestamp: new Date().toISOString()
     });
+  });
+
+  // Catch-all 404 for unknown /api routes (prevents SPA HTML fallback on removed endpoints)
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found' });
   });
 
   // Vite integration

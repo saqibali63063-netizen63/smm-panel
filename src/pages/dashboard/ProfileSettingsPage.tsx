@@ -1,16 +1,15 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { api } from '../../lib/api.ts';
-import { Settings, Lock, CheckCircle2, AlertCircle, Globe, Shield, Eye, EyeOff, Palette } from 'lucide-react';
-import { ThemeSelectorCards } from '../../components/theme/ThemeSelectorCards.tsx';
+import { Lock, CheckCircle2, AlertCircle, Globe, Eye, EyeOff } from 'lucide-react';
 
 export const ProfileSettingsPage: React.FC<{ onNavigate: (view: string) => void }> = () => {
   const { user, refreshUser } = useAuth();
-  
+
   // Profile settings
   const [timezone, setTimezone] = useState(user?.timezone || 'Asia/Karachi');
   const [currency, setCurrency] = useState(user?.currency || 'PKR');
-  const [profileMsg, setProfileMsg] = useState<string | null>(null);
+  const [profileMsg, setProfileMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Change password
   const [currentPassword, setCurrentPassword] = useState('');
@@ -26,11 +25,11 @@ export const ProfileSettingsPage: React.FC<{ onNavigate: (view: string) => void 
     e.preventDefault();
     try {
       const res = await api.updateProfile({ timezone, currency });
-      setProfileMsg(res.message);
+      setProfileMsg({ type: 'success', text: res.message });
       await refreshUser();
       setTimeout(() => setProfileMsg(null), 3000);
     } catch (err: any) {
-      alert(err.message || 'Update failed');
+      setProfileMsg({ type: 'error', text: err.message || 'Update failed' });
     }
   };
 
@@ -69,22 +68,6 @@ export const ProfileSettingsPage: React.FC<{ onNavigate: (view: string) => void 
         <h1 className="text-2xl font-bold text-white">Profile & Security Settings</h1>
       </div>
 
-      {/* Visual Themes & Appearance */}
-      <div className="rounded-xl border border-slate-800 bg-[#090f20] p-5 sm:p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-4">
-          <div className="space-y-0.5">
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Palette className="w-4 h-4 text-sky-400" />
-              <span>Workspace Theme & Visual Style</span>
-            </h3>
-            <p className="text-xs text-slate-400">
-              Select between Midnight Pro, Crystal Light, and Neon Galaxy with live preview & cloud profile sync.
-            </p>
-          </div>
-        </div>
-        <ThemeSelectorCards />
-      </div>
-
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         
         {/* Account Info & Preferences */}
@@ -95,9 +78,17 @@ export const ProfileSettingsPage: React.FC<{ onNavigate: (view: string) => void 
           </h3>
 
           {profileMsg && (
-            <div className="p-3 rounded-lg bg-emerald-950/60 border border-emerald-800 text-emerald-200 text-xs flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>{profileMsg}</span>
+            <div className={`p-3 rounded-lg text-xs flex items-center gap-2 border ${
+              profileMsg.type === 'success'
+                ? 'bg-emerald-950/60 border-emerald-800 text-emerald-200'
+                : 'bg-rose-950/60 border-rose-800 text-rose-200'
+            }`}>
+              {profileMsg.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              )}
+              <span>{profileMsg.text}</span>
             </div>
           )}
 

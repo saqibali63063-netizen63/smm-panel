@@ -72,6 +72,74 @@ export function resolveDatabasePath(): string {
 export const DB_PATH = resolveDatabasePath();
 console.log(`📁 Connected to database: ${DB_PATH}`);
 export const db = new DatabaseSync(DB_PATH);
+db.exec('PRAGMA busy_timeout = 5000;');
+
+export type ThemeMode = 'midnight' | 'crystal' | 'neon';
+
+export function getGlobalTheme(): ThemeMode {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'global_theme'").get() as { value: string } | undefined;
+  const val = row?.value;
+  if (val === 'midnight' || val === 'crystal' || val === 'neon') {
+    return val;
+  }
+  return 'midnight';
+}
+
+export function setGlobalTheme(theme: ThemeMode): ThemeMode {
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('global_theme', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(theme);
+  return theme;
+}
+
+export function getOrderSequenceInfo(): { next_order_id: number; max_order_id: number; total_orders: number } {
+  const stats = db.prepare('SELECT COALESCE(MAX(id), 0) as max_id, COUNT(*) as total FROM orders').get() as { max_id: number; total: number };
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'next_order_id'").get() as { value: string } | undefined;
+  let nextId = row ? parseInt(row.value, 10) : (stats.max_id + 1);
+  if (!Number.isInteger(nextId) || nextId < 1) {
+    nextId = stats.max_id + 1;
+  }
+  const existsStmt = db.prepare('SELECT 1 FROM orders WHERE id = ?');
+  while (existsStmt.get(nextId)) {
+    nextId++;
+  }
+  return {
+    next_order_id: nextId,
+    max_order_id: stats.max_id || 0,
+    total_orders: stats.total || 0
+  };
+}
+
+export function setNextOrderId(nextId: number): number {
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('next_order_id', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(nextId));
+  return nextId;
+}
+
+// MUST be called inside an active BEGIN IMMEDIATE TRANSACTION
+export function allocateNextOrderId(): number {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'next_order_id'").get() as { value: string } | undefined;
+  const maxRow = db.prepare('SELECT COALESCE(MAX(id), 0) as max_id FROM orders').get() as { max_id: number };
+  let candidate = row ? parseInt(row.value, 10) : (maxRow.max_id + 1);
+  if (!Number.isInteger(candidate) || candidate < 1) {
+    candidate = maxRow.max_id + 1;
+  }
+
+  const existsStmt = db.prepare('SELECT 1 FROM orders WHERE id = ?');
+  while (existsStmt.get(candidate)) {
+    candidate++;
+  }
+
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('next_order_id', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(candidate + 1));
+
+  return candidate;
+}
 
 
 // Helper for hashing passwords securely with salt
@@ -94,10 +162,6 @@ export function verifyPassword(password: string, storedHash: string): boolean {
 
 export function generateToken(): string {
   return crypto.randomBytes(32).toString('hex');
-}
-
-export function generateApiKey(): string {
-  return 'pak_' + crypto.randomBytes(24).toString('hex');
 }
 
 export function generateReferralCode(): string {
@@ -516,19 +580,17 @@ function seedInitialData() {
     
     // Seed Admin
     const adminHash = hashPassword('admin123');
-    const adminApiKey = generateApiKey();
     db.prepare(`
-      INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('admin@pakservices.com', 'admin', adminHash, 'admin', 50000.0, 0.0, 'active', adminApiKey, 'PAKADMIN', now);
+      INSERT INTO users (email, username, password_hash, role, balance, spent, status, referral_code, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('admin@pakservices.com', 'admin', adminHash, 'admin', 50000.0, 0.0, 'active', 'PAKADMIN', now);
 
     // Seed Demo User
     const userHash = hashPassword('user123');
-    const userApiKey = generateApiKey();
     db.prepare(`
-      INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('user@pakservices.com', 'demo_reseller', userHash, 'user', 4500.0, 1250.0, 'active', userApiKey, 'PAKRESELL', now);
+      INSERT INTO users (email, username, password_hash, role, balance, spent, status, referral_code, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('user@pakservices.com', 'demo_reseller', userHash, 'user', 4500.0, 1250.0, 'active', 'PAKRESELL', now);
 
     // Seed Demo Transaction
     db.prepare(`
@@ -549,12 +611,12 @@ function seedInitialData() {
 
     db.prepare(`
       INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Auto', ?, ?)
+      VALUES (101, 2, 1, 'https://instagram.com/pak_influencer_hub', 1000, 299.0, 1420, 0, 'Completed', 'Manual', ?, ?)
     `).run(twoDaysAgo, twoDaysAgo);
 
     db.prepare(`
       INSERT INTO orders (id, user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Auto', ?, ?)
+      VALUES (102, 2, 6, 'https://tiktok.com/@growth_creator/video/7381920192', 10000, 120.0, 850, 2400, 'In progress', 'Manual', ?, ?)
     `).run(yesterday, yesterday);
 
     db.prepare(`
@@ -664,14 +726,8 @@ export function ensureDefaultSettings() {
     }
   }
 
-  // Seed sample provider ONLY if no providers exist
-  const provCount = db.prepare('SELECT COUNT(*) as count FROM providers').get() as { count: number };
-  if (provCount.count === 0) {
-    db.prepare(`
-      INSERT INTO providers (name, api_url, api_key, status, balance, currency, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run('Global SMM Master Gateway', 'https://api.globalsmm.demo/v2', 'prov_live_sec_8917238129', 'active', '384.20', 'USD', new Date().toISOString());
-  }
+  const maxOrderRow = db.prepare('SELECT COALESCE(MAX(id), 0) as max_id FROM orders').get() as { max_id: number };
+  const initialNextOrderId = String(Math.max(1, (maxOrderRow?.max_id || 0) + 1));
 
   // Seed initial settings with INSERT OR IGNORE (never overwrites existing values)
   const settingsList = [
@@ -680,6 +736,8 @@ export function ensureDefaultSettings() {
     { key: 'currency_code', value: 'PKR' },
     { key: 'usd_pkr_rate', value: '280.0' },
     { key: 'referral_percent', value: '5.0' },
+    { key: 'global_theme', value: 'midnight' },
+    { key: 'next_order_id', value: initialNextOrderId },
     
     // Easypaisa
     { key: 'easypaisa_enabled', value: '1' },

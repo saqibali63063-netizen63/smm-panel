@@ -8,12 +8,10 @@ export interface User {
   balance: number;
   spent: number;
   status: string;
-  api_key: string;
   referral_code: string;
   created_at: string;
   timezone?: string;
   currency?: string;
-  theme?: ThemeMode;
 }
 
 export interface Category {
@@ -38,9 +36,6 @@ export interface Service {
   min_quantity: number;
   max_quantity: number;
   description: string;
-  provider_id?: number | null;
-  provider_name?: string;
-  provider_service_id?: string | null;
   refill_supported: number;
   cancel_supported: number;
   dripfeed_supported?: number;
@@ -65,12 +60,17 @@ export interface Order {
   remains: number;
   status: 'Pending' | 'In progress' | 'Completed' | 'Processing' | 'Partial' | 'Canceled';
   mode: string;
-  provider_order_id?: string;
   refill_status?: string;
   refill_supported?: number;
   cancel_supported?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface OrderSequenceInfo {
+  next_order_id: number;
+  max_order_id: number;
+  total_orders: number;
 }
 
 export interface Transaction {
@@ -170,17 +170,6 @@ export interface TicketMessage {
   created_at: string;
 }
 
-export interface Provider {
-  id: number;
-  name: string;
-  api_url: string;
-  api_key?: string;
-  api_key_masked?: string;
-  status: string;
-  balance: string;
-  currency: string;
-  created_at: string;
-}
 
 export interface Announcement {
   id: number;

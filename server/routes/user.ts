@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { db, hashPassword, verifyPassword, generateApiKey, generateReferralCode } from '../db.js';
+import { db, hashPassword, verifyPassword, generateReferralCode, allocateNextOrderId, getGlobalTheme } from '../db.js';
 import { createSession, removeSession, requireAuth, type AuthRequest } from '../auth.js';
 import { isSimDetailsCategoryName, validateSimDetailsInput, validateDeliveryContact } from '../simDetails.js';
 
@@ -9,6 +9,11 @@ export const userRouter = Router();
 // ==========================================
 // PUBLIC & AUTHENTICATION ENDPOINTS
 // ==========================================
+
+// Public Global Website Theme (Admin controlled)
+userRouter.get('/theme', (_req: Request, res: Response) => {
+  return res.json({ theme: getGlobalTheme() });
+});
 
 // Register
 userRouter.post('/auth/register', (req: Request, res: Response) => {
@@ -45,15 +50,14 @@ userRouter.post('/auth/register', (req: Request, res: Response) => {
   }
 
   const passwordHash = hashPassword(password);
-  const apiKey = generateApiKey();
   const userReferralCode = generateReferralCode();
   const now = new Date().toISOString();
 
   try {
     const result = db.prepare(`
-      INSERT INTO users (email, username, password_hash, role, balance, spent, status, api_key, referral_code, referred_by, created_at)
-      VALUES (?, ?, ?, 'user', 0.0, 0.0, 'active', ?, ?, ?, ?)
-    `).run(cleanEmail, cleanUser, passwordHash, apiKey, userReferralCode, referrerId, now);
+      INSERT INTO users (email, username, password_hash, role, balance, spent, status, referral_code, referred_by, created_at)
+      VALUES (?, ?, ?, 'user', 0.0, 0.0, 'active', ?, ?, ?)
+    `).run(cleanEmail, cleanUser, passwordHash, userReferralCode, referrerId, now);
 
     const userId = Number(result.lastInsertRowid);
     const token = createSession(userId);
@@ -66,12 +70,10 @@ userRouter.post('/auth/register', (req: Request, res: Response) => {
       balance: 0.0,
       spent: 0.0,
       status: 'active',
-      api_key: apiKey,
       referral_code: userReferralCode,
       created_at: now,
       timezone: 'Asia/Karachi',
-      currency: 'PKR',
-      theme: 'midnight'
+      currency: 'PKR'
     };
 
     return res.status(201).json({ token, user, message: 'Account registered successfully!' });
@@ -114,12 +116,10 @@ userRouter.post('/auth/login', (req: Request, res: Response) => {
       balance: user.balance,
       spent: user.spent,
       status: user.status,
-      api_key: user.api_key,
       referral_code: user.referral_code,
       created_at: user.created_at,
       timezone: user.timezone,
-      currency: user.currency,
-      theme: user.theme || 'midnight'
+      currency: user.currency
     },
     message: 'Login successful'
   });
@@ -129,7 +129,7 @@ userRouter.post('/auth/login', (req: Request, res: Response) => {
 userRouter.get('/auth/me', requireAuth, (req: AuthRequest, res: Response) => {
   // Fresh lookup for real-time balance
   const user = db.prepare(`
-    SELECT id, email, username, role, balance, spent, status, api_key, referral_code, created_at, timezone, currency, COALESCE(theme, 'midnight') as theme
+    SELECT id, email, username, role, balance, spent, status, referral_code, created_at, timezone, currency
     FROM users
     WHERE id = ?
   `).get(req.user!.id) as any;
@@ -203,28 +203,17 @@ userRouter.post('/auth/reset-password', (req: Request, res: Response) => {
 
 // Update Profile
 userRouter.put('/auth/profile', requireAuth, (req: AuthRequest, res: Response) => {
-  const { timezone, currency, theme } = req.body;
+  const { timezone, currency } = req.body;
   const user = req.user!;
 
   db.prepare(`
     UPDATE users
     SET timezone = COALESCE(?, timezone),
-        currency = COALESCE(?, currency),
-        theme = COALESCE(?, theme)
+        currency = COALESCE(?, currency)
     WHERE id = ?
-  `).run(timezone || null, currency || null, theme || null, user.id);
+  `).run(timezone || null, currency || null, user.id);
 
   return res.json({ success: true, message: 'Profile updated successfully.' });
-});
-
-// Update Theme Preference
-userRouter.put('/user/theme', requireAuth, (req: AuthRequest, res: Response) => {
-  const { theme } = req.body;
-  if (!theme || !['midnight', 'crystal', 'neon'].includes(theme)) {
-    return res.status(400).json({ error: 'Valid theme must be midnight, crystal, or neon' });
-  }
-  db.prepare('UPDATE users SET theme = ? WHERE id = ?').run(theme, req.user!.id);
-  return res.json({ success: true, theme, message: 'Theme saved to database profile.' });
 });
 
 // Change Password
@@ -245,13 +234,6 @@ userRouter.post('/auth/change-password', requireAuth, (req: AuthRequest, res: Re
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, userId);
 
   return res.json({ success: true, message: 'Password changed successfully.' });
-});
-
-// Regenerate API Key
-userRouter.post('/auth/regenerate-api-key', requireAuth, (req: AuthRequest, res: Response) => {
-  const newKey = generateApiKey();
-  db.prepare('UPDATE users SET api_key = ? WHERE id = ?').run(newKey, req.user!.id);
-  return res.json({ api_key: newKey, message: 'New API key generated successfully.' });
 });
 
 // ==========================================
@@ -436,12 +418,12 @@ userRouter.post('/orders', requireAuth, (req: AuthRequest, res: Response) => {
     const updatedUser = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId) as any;
     const newBalance = updatedUser.balance;
 
-    const orderRes = db.prepare(`
-      INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-    `).run(userId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
+    const orderId = allocateNextOrderId();
 
-    const orderId = Number(orderRes.lastInsertRowid);
+    db.prepare(`
+      INSERT INTO orders (id, user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Manual', ?, ?)
+    `).run(orderId, userId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
 
     db.prepare(`
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
@@ -534,18 +516,34 @@ userRouter.post('/orders/mass', requireAuth, (req: AuthRequest, res: Response) =
     }
 
     const now = new Date().toISOString();
-    const newBal = parseFloat((user.balance - charge).toFixed(2));
-    const newSpent = parseFloat((user.spent + charge).toFixed(2));
 
-    db.exec('BEGIN TRANSACTION');
+    db.exec('BEGIN IMMEDIATE TRANSACTION');
     try {
-      db.prepare('UPDATE users SET balance = ?, spent = ? WHERE id = ?').run(newBal, newSpent, userId);
-      const resOrder = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(userId, service.id, link, finalDelivery, finalQty, charge, finalQty, now, now);
+      const deductRes = db.prepare(`
+        UPDATE users
+        SET balance = ROUND(balance - ?, 2),
+            spent = ROUND(spent + ?, 2)
+        WHERE id = ? AND balance >= ?
+      `).run(charge, charge, userId, charge);
 
-      const oId = Number(resOrder.lastInsertRowid);
+      if (deductRes.changes !== 1) {
+        db.exec('ROLLBACK');
+        const freshUser = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId) as any;
+        user.balance = freshUser?.balance || 0;
+        results.push({ line: i + 1, error: `Insufficient funds (Requires Rs ${charge})` });
+        continue;
+      }
+
+      const updatedUser = db.prepare('SELECT balance, spent FROM users WHERE id = ?').get(userId) as any;
+      const newBal = updatedUser.balance;
+      const newSpent = updatedUser.spent;
+
+      const oId = allocateNextOrderId();
+      db.prepare(`
+        INSERT INTO orders (id, user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Manual', ?, ?)
+      `).run(oId, userId, service.id, link, finalDelivery, finalQty, charge, finalQty, now, now);
+
       db.prepare(`
         INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
         VALUES (?, 'order', ?, ?, ?, ?, ?)
@@ -558,7 +556,7 @@ userRouter.post('/orders/mass', requireAuth, (req: AuthRequest, res: Response) =
 
       results.push({ line: i + 1, success: true, order_id: oId, charge });
     } catch (e: any) {
-      db.exec('ROLLBACK');
+      try { db.exec('ROLLBACK'); } catch {}
       results.push({ line: i + 1, error: e.message });
     }
   }

@@ -10,7 +10,6 @@ import { FloatingWhatsAppButton } from './components/common/FloatingWhatsAppButt
 // Public Pages
 import { HomePage } from './pages/public/HomePage.tsx';
 import { ServicesPage } from './pages/public/ServicesPage.tsx';
-import { ApiDocsPage } from './pages/public/ApiDocsPage.tsx';
 import { FaqPage } from './pages/public/FaqPage.tsx';
 import { ContactPage } from './pages/public/ContactPage.tsx';
 import { TermsPage } from './pages/public/TermsPage.tsx';
@@ -30,7 +29,6 @@ import { UserServicesPage } from './pages/dashboard/UserServicesPage.tsx';
 import { AddFundsPage } from './pages/dashboard/AddFundsPage.tsx';
 import { TransactionsPage } from './pages/dashboard/TransactionsPage.tsx';
 import { ReferralsPage } from './pages/dashboard/ReferralsPage.tsx';
-import { ApiManagementPage } from './pages/dashboard/ApiManagementPage.tsx';
 import { SupportTicketsPage } from './pages/dashboard/SupportTicketsPage.tsx';
 import { ProfileSettingsPage } from './pages/dashboard/ProfileSettingsPage.tsx';
 
@@ -42,8 +40,8 @@ import { AdminCategoriesPage } from './pages/admin/AdminCategoriesPage.tsx';
 import { AdminServicesPage } from './pages/admin/AdminServicesPage.tsx';
 import { AdminPaymentsPage } from './pages/admin/AdminPaymentsPage.tsx';
 import { AdminTicketsPage } from './pages/admin/AdminTicketsPage.tsx';
-import { AdminProvidersPage } from './pages/admin/AdminProvidersPage.tsx';
 import { AdminSettingsPage } from './pages/admin/AdminSettingsPage.tsx';
+import { AdminThemeManager } from './components/admin/AdminThemeManager.tsx';
 
 function AppContent() {
   const { user, isAdmin, isLoading } = useAuth();
@@ -98,7 +96,6 @@ function AppContent() {
     'add-funds',
     'transactions',
     'referrals',
-    'api-keys',
     'tickets',
     'settings'
   ].includes(currentView);
@@ -142,7 +139,7 @@ function AppContent() {
         {currentView === 'admin-services' && <AdminServicesPage onNavigate={navigate} />}
         {currentView === 'admin-payments' && <AdminPaymentsPage onNavigate={navigate} />}
         {currentView === 'admin-tickets' && <AdminTicketsPage onNavigate={navigate} />}
-        {currentView === 'admin-providers' && <AdminProvidersPage onNavigate={navigate} />}
+        {currentView === 'admin-appearance' && <AdminThemeManager />}
         {currentView === 'admin-settings' && <AdminSettingsPage onNavigate={navigate} />}
         {currentView === 'admin-audit' && <AdminSettingsPage onNavigate={navigate} />}
       </AdminLayout>
@@ -173,7 +170,6 @@ function AppContent() {
         {currentView === 'add-funds' && <AddFundsPage onNavigate={navigate} />}
         {currentView === 'transactions' && <TransactionsPage onNavigate={navigate} />}
         {currentView === 'referrals' && <ReferralsPage onNavigate={navigate} />}
-        {currentView === 'api-keys' && <ApiManagementPage onNavigate={navigate} />}
         {currentView === 'tickets' && <SupportTicketsPage onNavigate={navigate} />}
         {currentView === 'settings' && <ProfileSettingsPage onNavigate={navigate} />}
       </UserLayout>
@@ -188,7 +184,6 @@ function AppContent() {
       <main className="flex-1 w-full max-w-full overflow-x-hidden">
         {currentView === 'home' && <HomePage onNavigate={navigate} />}
         {currentView === 'services' && <ServicesPage onNavigate={navigate} />}
-        {currentView === 'api-docs' && <ApiDocsPage onNavigate={navigate} />}
         {currentView === 'faq' && <FaqPage onNavigate={navigate} />}
         {currentView === 'contact' && <ContactPage onNavigate={navigate} />}
         {currentView === 'terms' && <TermsPage onNavigate={navigate} />}

@@ -57,7 +57,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onNavigate }) => {
           </div>
           <h1 className="text-lg sm:text-xl font-bold text-white">Welcome Back</h1>
           <p className="text-xs text-slate-400 max-w-xs mx-auto">
-            Sign in to access your wholesale orders, balance & API keys
+            Sign in to access your wholesale orders, balance &amp; services
           </p>
         </div>
 

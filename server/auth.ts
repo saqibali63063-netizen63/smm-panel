@@ -9,7 +9,6 @@ export interface AuthenticatedUser {
   balance: number;
   spent: number;
   status: string;
-  api_key: string;
   referral_code: string;
   created_at: string;
   timezone: string;
@@ -41,7 +40,7 @@ export function getUserByToken(token: string): AuthenticatedUser | null {
   if (!token) return null;
   
   const session = db.prepare(`
-    SELECT s.expires_at, u.id, u.email, u.username, u.role, u.balance, u.spent, u.status, u.api_key, u.referral_code, u.created_at, u.timezone, u.currency
+    SELECT s.expires_at, u.id, u.email, u.username, u.role, u.balance, u.spent, u.status, u.referral_code, u.created_at, u.timezone, u.currency
     FROM sessions s
     JOIN users u ON s.user_id = u.id
     WHERE s.token = ?
@@ -66,7 +65,6 @@ export function getUserByToken(token: string): AuthenticatedUser | null {
     balance: session.balance,
     spent: session.spent,
     status: session.status,
-    api_key: session.api_key,
     referral_code: session.referral_code,
     created_at: session.created_at,
     timezone: session.timezone,

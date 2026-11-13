@@ -59,7 +59,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onNavigate }) => {
           Get in Touch With Our Pakistan Desk
         </h1>
         <p className="text-xs sm:text-sm text-slate-400 max-w-lg mx-auto">
-          Need custom high-volume reseller rates, deposit verification, or technical API support? We are here to help.
+          Need custom high-volume reseller rates, deposit verification, or order support? We are here to help.
         </p>
       </div>
 
@@ -208,7 +208,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onNavigate }) => {
                 type="text"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Deposit Inquiry / Custom API Integration"
+                placeholder="e.g. Deposit Inquiry / Order Status Help"
                 className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
               />
             </div>

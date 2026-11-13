@@ -8,7 +8,7 @@ interface FaqPageProps {
 interface FaqItem {
   q: string;
   a: string;
-  category: 'General' | 'Payments' | 'Orders' | 'Refills & Drops' | 'API';
+  category: 'General' | 'Payments' | 'Orders' | 'Refills & Drops';
 }
 
 export const FaqPage: React.FC<FaqPageProps> = ({ onNavigate }) => {
@@ -19,7 +19,7 @@ export const FaqPage: React.FC<FaqPageProps> = ({ onNavigate }) => {
     {
       category: 'General',
       q: 'What is PakServices SMM Panel?',
-      a: 'PakServices is an automated Social Media Marketing (SMM) wholesale provider and reseller platform in Pakistan. We supply followers, likes, views, watchtime, and engagement across TikTok, Instagram, YouTube, Facebook, and Telegram at direct wholesale rates.'
+      a: 'PakServices is a Social Media Marketing (SMM) wholesale reseller platform in Pakistan. We supply followers, likes, views, watchtime, and engagement across TikTok, Instagram, YouTube, Facebook, and Telegram at direct wholesale rates.'
     },
     {
       category: 'Payments',
@@ -52,18 +52,13 @@ export const FaqPage: React.FC<FaqPageProps> = ({ onNavigate }) => {
       a: 'While an order is in "Pending" status before our dispatch engine has started processing it, you can cancel it with 1 click in "My Orders" for an immediate automatic refund to your balance.'
     },
     {
-      category: 'API',
-      q: 'Can I connect PakServices to my own reseller website or Perfect Panel?',
-      a: 'Absolutely! We fully support the standard SMM v2 API format used by all major reseller scripts. Head over to the API Management page in your dashboard to generate your API key.'
-    },
-    {
       category: 'General',
       q: 'How does the 5% Referral Commission work?',
       a: 'Every registered user has a unique referral link. Whenever anyone signs up through your link, you automatically earn a lifetime 5% commission on every single order they complete, credited directly to your spendable balance.'
     }
   ];
 
-  const categories = ['All', 'General', 'Payments', 'Orders', 'Refills & Drops', 'API'];
+  const categories = ['All', 'General', 'Payments', 'Orders', 'Refills & Drops'];
   const filtered = selectedCategory === 'All' ? faqs : faqs.filter(f => f.category === selectedCategory);
 
   return (
@@ -78,7 +73,7 @@ export const FaqPage: React.FC<FaqPageProps> = ({ onNavigate }) => {
           Frequently Asked Questions
         </h1>
         <p className="text-xs sm:text-sm text-slate-400 max-w-lg mx-auto">
-          Everything you need to know about placing orders, adding funds via Easypaisa/JazzCash, drop refills, and API reselling.
+          Everything you need to know about placing orders, adding funds via Easypaisa/JazzCash, and drop refills.
         </p>
       </div>
 

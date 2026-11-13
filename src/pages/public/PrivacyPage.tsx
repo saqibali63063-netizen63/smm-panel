@@ -31,7 +31,7 @@ export const PrivacyPage: React.FC<{ onNavigate: (view: string) => void }> = () 
         <section className="space-y-2">
           <h2 className="text-base font-bold text-white">3. Non-Disclosure & Reseller Privacy</h2>
           <p>
-            We strictly respect reseller confidentiality. Your client usernames, order links, and API activity are never shared, sold, or disclosed to third-party advertisers or competing networks.
+            We strictly respect reseller confidentiality. Your client usernames, order targets, and account activity are never shared, sold, or disclosed to third-party advertisers or competing networks.
           </p>
         </section>
 

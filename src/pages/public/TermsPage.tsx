@@ -17,7 +17,7 @@ export const TermsPage: React.FC<{ onNavigate: (view: string) => void }> = () =>
         <section className="space-y-2">
           <h2 className="text-base font-bold text-white">1. Acceptance of Terms</h2>
           <p>
-            By creating an account, depositing funds, or using the API services provided by PakServices, you agree to be bound by these Terms of Service. If you do not accept these terms, please do not use the service.
+            By creating an account, depositing funds, or placing orders through PakServices, you agree to be bound by these Terms of Service. If you do not accept these terms, please do not use the service.
           </p>
         </section>
 
@@ -49,9 +49,9 @@ export const TermsPage: React.FC<{ onNavigate: (view: string) => void }> = () =>
         </section>
 
         <section className="space-y-2">
-          <h2 className="text-base font-bold text-white">5. API Usage</h2>
+          <h2 className="text-base font-bold text-white">5. Account Security</h2>
           <p>
-            API keys must be kept confidential. Resellers are solely responsible for all API requests executed with their keys. PakServices employs automated rate limiting to prevent denial-of-service abuse.
+            Users are responsible for keeping their login credentials confidential. PakServices employs rate limiting and audit controls to safeguard your balance and order history.
           </p>
         </section>
       </div>
