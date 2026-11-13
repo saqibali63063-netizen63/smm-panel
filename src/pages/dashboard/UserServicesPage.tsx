@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../lib/api.ts';
 import type { Category, Service } from '../../types/index.ts';
 import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
+import { isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 import { Star, Search, Info, X } from 'lucide-react';
 
 interface UserServicesPageProps {
@@ -171,6 +172,7 @@ export const UserServicesPage: React.FC<UserServicesPageProps> = ({ onNavigate }
               ) : (
                 filteredServices.map(s => {
                   const isFav = favorites.includes(s.id);
+                  const isSimDetails = isSimDetailsCategoryName(s.category_name);
                   return (
                     <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
                       <td className="py-3 px-3 text-center">
@@ -196,10 +198,15 @@ export const UserServicesPage: React.FC<UserServicesPageProps> = ({ onNavigate }
                         </div>
                       </td>
                       <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums whitespace-nowrap">
-                        Rs {s.rate_per_1000.toFixed(2)}
+                        <div>Rs {s.rate_per_1000.toFixed(2)}</div>
+                        {isSimDetails && (
+                          <span className="block text-[10px] font-sans font-semibold text-sky-400">
+                            per Number
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4 font-mono text-slate-400 tabular-nums whitespace-nowrap">
-                        {s.min_quantity.toLocaleString()} / {s.max_quantity.toLocaleString()}
+                        {isSimDetails ? '1 Order' : `${s.min_quantity.toLocaleString()} / ${s.max_quantity.toLocaleString()}`}
                       </td>
                       <td className="py-3 px-4 whitespace-nowrap">
                         {s.refill_supported ? (
@@ -253,12 +260,23 @@ export const UserServicesPage: React.FC<UserServicesPageProps> = ({ onNavigate }
 
             <div className="p-3.5 rounded-lg bg-[#080d1a] border border-slate-800 text-xs space-y-2">
               <div className="flex justify-between">
-                <span className="text-slate-400">Rate:</span>
-                <span className="font-mono font-bold text-emerald-400">Rs {activeModalService.rate_per_1000.toFixed(2)} per 1,000</span>
+                <span className="text-slate-400">
+                  {isSimDetailsCategoryName(activeModalService.category_name) ? 'Price per Number:' : 'Rate:'}
+                </span>
+                <span className="font-mono font-bold text-emerald-400">
+                  Rs {activeModalService.rate_per_1000.toFixed(2)}{' '}
+                  {isSimDetailsCategoryName(activeModalService.category_name) ? 'per Number' : 'per 1,000'}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Min / Max:</span>
-                <span className="font-mono text-white">{activeModalService.min_quantity.toLocaleString()} - {activeModalService.max_quantity.toLocaleString()}</span>
+                <span className="text-slate-400">
+                  {isSimDetailsCategoryName(activeModalService.category_name) ? 'Quantity:' : 'Min / Max:'}
+                </span>
+                <span className="font-mono text-white">
+                  {isSimDetailsCategoryName(activeModalService.category_name)
+                    ? '1 Order (Per Number)'
+                    : `${activeModalService.min_quantity.toLocaleString()} - ${activeModalService.max_quantity.toLocaleString()}`}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Refill Guarantee:</span>

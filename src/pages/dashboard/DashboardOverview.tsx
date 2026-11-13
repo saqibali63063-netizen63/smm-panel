@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext.tsx';
 import type { ThemeMode } from '../../types/index.ts';
+import { isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 
 interface DashboardOverviewProps {
   onNavigate: (view: string) => void;
@@ -330,10 +331,23 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({ onNavigate
                     <td className="py-3 px-4 font-medium text-white max-w-xs truncate">
                       {o.service_name}
                     </td>
-                    <td className="py-3 px-4 font-mono text-slate-400 max-w-xs truncate">
-                      <a href={o.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline">
-                        {o.link}
-                      </a>
+                    <td className="py-3 px-4 font-mono text-slate-400 max-w-xs">
+                      {isSimDetailsCategoryName(o.category_name) || !/^https?:\/\//i.test(o.link) ? (
+                        <div className="space-y-0.5">
+                          <div className="text-sky-300 font-mono truncate select-all" title={o.link}>
+                            {o.link}
+                          </div>
+                          {o.delivery_contact && (
+                            <div className="text-[10px] text-emerald-300/90 font-mono truncate" title={`Delivery: ${o.delivery_contact}`}>
+                              Delivery: {o.delivery_contact}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <a href={o.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline block truncate">
+                          {o.link}
+                        </a>
+                      )}
                     </td>
                     <td className="py-3 px-4 font-mono tabular-nums">{o.quantity.toLocaleString()}</td>
                     <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums">

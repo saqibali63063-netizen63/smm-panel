@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { db, hashPassword, verifyPassword, generateApiKey, generateReferralCode } from '../db.js';
 import { createSession, removeSession, requireAuth, type AuthRequest } from '../auth.js';
+import { isSimDetailsCategoryName, validateSimDetailsInput, validateDeliveryContact } from '../simDetails.js';
 
 export const userRouter = Router();
 
@@ -310,6 +311,7 @@ userRouter.get('/orders', requireAuth, (req: AuthRequest, res: Response) => {
   let query = `
     SELECT o.*, 
            COALESCE(s.name, 'Service #' || o.service_id) as service_name, 
+           s.category_id as category_id,
            COALESCE(c.name, 'General') as category_name, 
            COALESCE(s.refill_supported, 0) as refill_supported, 
            COALESCE(s.cancel_supported, 0) as cancel_supported
@@ -327,8 +329,8 @@ userRouter.get('/orders', requireAuth, (req: AuthRequest, res: Response) => {
   }
 
   if (search) {
-    query += ` AND (LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)`;
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    query += ` AND (LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR LOWER(COALESCE(o.delivery_contact, '')) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)`;
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
   }
 
   query += ` ORDER BY o.id DESC LIMIT 200`;
@@ -340,53 +342,104 @@ userRouter.get('/orders', requireAuth, (req: AuthRequest, res: Response) => {
 // Create New Order
 userRouter.post('/orders', requireAuth, (req: AuthRequest, res: Response) => {
   const userId = req.user!.id;
-  const { service_id, link, quantity } = req.body;
+  const { service_id, link, quantity, delivery_contact } = req.body;
 
   const sId = parseInt(service_id, 10);
-  const q = parseInt(quantity, 10);
+  const parsedQty = parseInt(quantity, 10);
   const cleanLink = (link || '').trim();
+  const cleanDeliveryContact = (delivery_contact || '').trim();
 
-  if (!sId || !q || isNaN(q) || q <= 0 || !cleanLink) {
-    return res.status(400).json({ error: 'Please provide valid service, quantity, and link.' });
+  if (!sId || !cleanLink) {
+    return res.status(400).json({ error: 'Please provide valid service and target input.' });
   }
 
-  // Fetch current service
+  // Fetch current service along with its category identifier & name
   const service = db.prepare(`
-    SELECT * FROM services WHERE id = ? AND status = 'active'
+    SELECT s.*, c.name as category_name
+    FROM services s
+    LEFT JOIN categories c ON s.category_id = c.id
+    WHERE s.id = ? AND s.status = 'active'
   `).get(sId) as any;
 
   if (!service) {
     return res.status(404).json({ error: 'Selected service is currently unavailable.' });
   }
 
-  if (q < service.min_quantity || q > service.max_quantity) {
-    return res.status(400).json({
-      error: `Quantity for this service must be between ${service.min_quantity.toLocaleString()} and ${service.max_quantity.toLocaleString()}.`
-    });
+  const isSimDetails = isSimDetailsCategoryName(service.category_name);
+
+  let finalTargetInput = cleanLink;
+  let finalDeliveryContact: string | null = null;
+  let finalQuantity = parsedQty;
+  let charge = 0;
+
+  if (isSimDetails) {
+    // 1. Validate Service Target: Pakistani Mobile Number or CNIC
+    const simCheck = validateSimDetailsInput(cleanLink);
+    if (!simCheck.valid) {
+      return res.status(400).json({ error: simCheck.error });
+    }
+    finalTargetInput = simCheck.normalized;
+
+    // 2. Validate Required Delivery Contact: Email or Pakistani WhatsApp Number
+    const deliveryCheck = validateDeliveryContact(cleanDeliveryContact);
+    if (!deliveryCheck.valid) {
+      return res.status(400).json({ error: deliveryCheck.error });
+    }
+    finalDeliveryContact = deliveryCheck.normalized;
+
+    // 3. SIM Details pricing: fixed per one order / per one number (quantity = 1)
+    finalQuantity = 1;
+    charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+  } else {
+    // Standard SMM category pricing (per 1000 units)
+    if (!parsedQty || isNaN(parsedQty) || parsedQty <= 0) {
+      return res.status(400).json({ error: 'Please provide a valid quantity.' });
+    }
+
+    if (parsedQty < service.min_quantity || parsedQty > service.max_quantity) {
+      return res.status(400).json({
+        error: `Quantity for this service must be between ${service.min_quantity.toLocaleString()} and ${service.max_quantity.toLocaleString()}.`
+      });
+    }
+
+    charge = parseFloat(((parsedQty / 1000) * service.rate_per_1000).toFixed(2));
   }
 
-  const charge = parseFloat(((q / 1000) * service.rate_per_1000).toFixed(2));
-
-  // Check user balance
-  const user = db.prepare('SELECT balance, spent FROM users WHERE id = ?').get(userId) as any;
-  if (user.balance < charge) {
+  // Pre-check user balance for clear error response
+  const userCheck = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId) as any;
+  if (!userCheck || userCheck.balance < charge) {
     return res.status(400).json({
-      error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${user.balance.toFixed(2)}. Please Add Funds.`
+      error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(userCheck?.balance || 0).toFixed(2)}. Please Add Funds.`
     });
   }
 
   const now = new Date().toISOString();
-  const newBalance = user.balance - charge;
-  const newSpent = user.spent + charge;
 
-  db.exec('BEGIN TRANSACTION');
+  // Atomic transaction prevents concurrent race conditions or duplicate balance deductions
+  db.exec('BEGIN IMMEDIATE TRANSACTION');
   try {
-    db.prepare('UPDATE users SET balance = ?, spent = ? WHERE id = ?').run(newBalance, newSpent, userId);
+    const deductRes = db.prepare(`
+      UPDATE users
+      SET balance = ROUND(balance - ?, 2),
+          spent = ROUND(spent + ?, 2)
+      WHERE id = ? AND balance >= ?
+    `).run(charge, charge, userId, charge);
+
+    if (deductRes.changes !== 1) {
+      db.exec('ROLLBACK');
+      const freshUser = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId) as any;
+      return res.status(400).json({
+        error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(freshUser?.balance || 0).toFixed(2)}. Please Add Funds.`
+      });
+    }
+
+    const updatedUser = db.prepare('SELECT balance FROM users WHERE id = ?').get(userId) as any;
+    const newBalance = updatedUser.balance;
 
     const orderRes = db.prepare(`
-      INSERT INTO orders (user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-    `).run(userId, service.id, cleanLink, q, charge, q, now, now);
+      INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
+    `).run(userId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
 
     const orderId = Number(orderRes.lastInsertRowid);
 
@@ -405,7 +458,7 @@ userRouter.post('/orders', requireAuth, (req: AuthRequest, res: Response) => {
       message: `Order #${orderId} submitted successfully!`
     });
   } catch (err: any) {
-    db.exec('ROLLBACK');
+    try { db.exec('ROLLBACK'); } catch {}
     return res.status(500).json({ error: 'Order placement failed: ' + err.message });
   }
 });
@@ -438,34 +491,59 @@ userRouter.post('/orders/mass', requireAuth, (req: AuthRequest, res: Response) =
     const qty = parseInt(parts[1], 10);
     const link = parts[2];
 
-    const service = db.prepare("SELECT * FROM services WHERE id = ? AND status = 'active'").get(sId) as any;
+    const service = db.prepare(`
+      SELECT s.*, c.name as category_name
+      FROM services s
+      LEFT JOIN categories c ON s.category_id = c.id
+      WHERE s.id = ? AND s.status = 'active'
+    `).get(sId) as any;
     if (!service) {
       results.push({ line: i + 1, error: `Service ID ${sId} not found or inactive` });
       continue;
     }
 
-    if (qty < service.min_quantity || qty > service.max_quantity) {
-      results.push({ line: i + 1, error: `Quantity must be ${service.min_quantity}-${service.max_quantity}` });
-      continue;
+    let finalQty = qty;
+    let finalDelivery: string | null = null;
+    let charge = 0;
+
+    if (isSimDetailsCategoryName(service.category_name)) {
+      const simCheck = validateSimDetailsInput(link);
+      if (!simCheck.valid) {
+        results.push({ line: i + 1, error: simCheck.error });
+        continue;
+      }
+      const deliveryCheck = validateDeliveryContact(parts[3] || '');
+      if (!deliveryCheck.valid) {
+        results.push({ line: i + 1, error: `SIM Details requires delivery contact (4th column): ${deliveryCheck.error}` });
+        continue;
+      }
+      finalDelivery = deliveryCheck.normalized;
+      finalQty = 1;
+      charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+    } else {
+      if (qty < service.min_quantity || qty > service.max_quantity) {
+        results.push({ line: i + 1, error: `Quantity must be ${service.min_quantity}-${service.max_quantity}` });
+        continue;
+      }
+      charge = parseFloat(((qty / 1000) * service.rate_per_1000).toFixed(2));
     }
 
-    const charge = parseFloat(((qty / 1000) * service.rate_per_1000).toFixed(2));
     if (user.balance < charge) {
       results.push({ line: i + 1, error: `Insufficient funds (Requires Rs ${charge})` });
       continue;
     }
 
     const now = new Date().toISOString();
-    const newBal = user.balance - charge;
-    const newSpent = user.spent + charge;
+    const newBal = parseFloat((user.balance - charge).toFixed(2));
+    const newSpent = parseFloat((user.spent + charge).toFixed(2));
 
     db.exec('BEGIN TRANSACTION');
     try {
       db.prepare('UPDATE users SET balance = ?, spent = ? WHERE id = ?').run(newBal, newSpent, userId);
       const resOrder = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(userId, service.id, link, qty, charge, qty, now, now);
+        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
+      `).run(userId, service.id, link, finalDelivery, finalQty, charge, finalQty, now, now);
 
       const oId = Number(resOrder.lastInsertRowid);
       db.prepare(`

@@ -1,8 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { api } from '../../lib/api.ts';
 import type { Category, Service } from '../../types/index.ts';
 import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
+import {
+  getSimDetailsCategoryId,
+  isSimDetailsCategory,
+  validateSimDetailsInput,
+  validateDeliveryContact
+} from '../../lib/simDetails.ts';
 import {
   PlusCircle,
   Zap,
@@ -29,25 +35,43 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
   const [selectedCatId, setSelectedCatId] = useState<number>(1);
   const [selectedServiceId, setSelectedServiceId] = useState<number>(1);
   const [link, setLink] = useState('');
+  const [deliveryContact, setDeliveryContact] = useState('');
   const [quantity, setQuantity] = useState<number>(1000);
   
   const [status, setStatus] = useState<{ type: 'success' | 'error'; text: string; orderId?: number } | null>(null);
+  const [inputError, setInputError] = useState<string | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [confirmModal, setConfirmModal] = useState(false);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     refreshUser();
     api.getServices().then(res => {
       setCategories(res.categories);
       setServices(res.services);
-      if (res.categories.length > 0) setSelectedCatId(res.categories[0].id);
-      if (res.services.length > 0) setSelectedServiceId(res.services[0].id);
+      if (res.categories.length > 0) {
+        const firstCat = res.categories[0];
+        const firstCatId = firstCat.id;
+        setSelectedCatId(firstCatId);
+        const firstInCat = res.services.find(s => s.category_id === firstCatId) || res.services[0];
+        if (firstInCat) {
+          setSelectedServiceId(firstInCat.id);
+          const simCatId = getSimDetailsCategoryId(res.categories);
+          setQuantity(isSimDetailsCategory(firstCat, simCatId) ? 1 : firstInCat.min_quantity);
+        }
+      } else if (res.services.length > 0) {
+        setSelectedServiceId(res.services[0].id);
+        setQuantity(res.services[0].min_quantity);
+      }
     });
   }, []);
 
   const categoryServices = services.filter(s => s.category_id === selectedCatId);
-  const currentService = services.find(s => s.id === selectedServiceId) || categoryServices[0] || services[0];
+  const currentService = categoryServices.find(s => s.id === selectedServiceId) || categoryServices[0] || null;
   const currentCategory = categories.find(c => c.id === selectedCatId);
+  const simDetailsCategoryId = getSimDetailsCategoryId(categories);
+  const isSimDetails = isSimDetailsCategory(currentCategory, simDetailsCategoryId);
 
   const getLinkPlaceholder = () => {
     const catName = (currentCategory?.name || '').toLowerCase();
@@ -103,34 +127,79 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
     return `https://${(currentCategory?.name || 'target').toLowerCase().replace(/[^a-z0-9]/g, '')}.com/link`;
   };
 
-  const charge = currentService ? parseFloat(((quantity / 1000) * currentService.rate_per_1000).toFixed(2)) : 0;
+  const effectiveQuantity = isSimDetails ? 1 : quantity;
+  const charge = currentService
+    ? parseFloat(
+        (isSimDetails
+          ? Number(currentService.rate_per_1000)
+          : (quantity / 1000) * currentService.rate_per_1000
+        ).toFixed(2)
+      )
+    : 0;
   const userBalance = user?.balance || 0;
   const hasInsufficientFunds = userBalance < charge;
 
   const handleCategoryChange = (catId: number) => {
+    const nextCat = categories.find(c => c.id === catId);
+    const nextIsSimDetails = isSimDetailsCategory(nextCat, simDetailsCategoryId);
+    if (nextIsSimDetails !== isSimDetails) {
+      setLink('');
+      setDeliveryContact('');
+    }
+    setInputError(null);
+    setDeliveryError(null);
+    setStatus(null);
     setSelectedCatId(catId);
     const firstInCat = services.find(s => s.category_id === catId);
     if (firstInCat) {
       setSelectedServiceId(firstInCat.id);
-      setQuantity(firstInCat.min_quantity);
+      setQuantity(nextIsSimDetails ? 1 : firstInCat.min_quantity);
+    } else if (nextIsSimDetails) {
+      setQuantity(1);
     }
   };
 
   const handlePreSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!link.trim()) {
-      setStatus({ type: 'error', text: 'Please enter a valid target link.' });
+    setInputError(null);
+    setDeliveryError(null);
+
+    if (!currentService) {
+      setStatus({ type: 'error', text: 'Please select an available service.' });
       return;
     }
 
-    if (quantity < (currentService?.min_quantity || 10)) {
-      setStatus({ type: 'error', text: `Minimum quantity is ${currentService?.min_quantity}` });
-      return;
-    }
+    if (isSimDetails) {
+      const targetValidation = validateSimDetailsInput(link);
+      if (!targetValidation.valid) {
+        const msg = targetValidation.error || 'Please enter a valid Pakistani Mobile Number or CNIC.';
+        setInputError(msg);
+        setStatus({ type: 'error', text: msg });
+        return;
+      }
 
-    if (quantity > (currentService?.max_quantity || 100000)) {
-      setStatus({ type: 'error', text: `Maximum quantity is ${currentService?.max_quantity}` });
-      return;
+      const contactValidation = validateDeliveryContact(deliveryContact);
+      if (!contactValidation.valid) {
+        const msg = contactValidation.error || 'Please enter a valid Delivery Email or WhatsApp Number.';
+        setDeliveryError(msg);
+        setStatus({ type: 'error', text: msg });
+        return;
+      }
+    } else {
+      if (!link.trim()) {
+        setStatus({ type: 'error', text: 'Please enter a valid target link.' });
+        return;
+      }
+
+      if (quantity < (currentService?.min_quantity || 10)) {
+        setStatus({ type: 'error', text: `Minimum quantity is ${currentService?.min_quantity}` });
+        return;
+      }
+
+      if (quantity > (currentService?.max_quantity || 100000)) {
+        setStatus({ type: 'error', text: `Maximum quantity is ${currentService?.max_quantity}` });
+        return;
+      }
     }
 
     if (hasInsufficientFunds) {
@@ -146,7 +215,8 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
   };
 
   const executeOrder = async () => {
-    if (!currentService) return;
+    if (!currentService || submittingRef.current) return;
+    submittingRef.current = true;
     setConfirmModal(false);
     setSubmitting(true);
     setStatus(null);
@@ -155,7 +225,8 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
       const res = await api.createOrder({
         service_id: currentService.id,
         link: link.trim(),
-        quantity
+        quantity: effectiveQuantity,
+        ...(isSimDetails ? { delivery_contact: deliveryContact.trim() } : {})
       });
 
       setStatus({
@@ -164,10 +235,14 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
         orderId: res.order_id
       });
       setLink('');
+      if (isSimDetails) {
+        setDeliveryContact('');
+      }
       await refreshUser();
     } catch (err: any) {
       setStatus({ type: 'error', text: err.message || 'Failed to place order.' });
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -294,63 +369,148 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
                   const sId = Number(e.target.value);
                   setSelectedServiceId(sId);
                   const found = services.find(s => s.id === sId);
-                  if (found) setQuantity(found.min_quantity);
+                  if (found) setQuantity(isSimDetails ? 1 : found.min_quantity);
                 }}
                 className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2.5 text-white font-medium focus:outline-none focus:border-sky-500"
               >
                 {categoryServices.map(s => (
                   <option key={s.id} value={s.id}>
-                    #{s.id} - {s.name} (Rs {s.rate_per_1000.toFixed(2)}/1k)
+                    {isSimDetails
+                      ? `#${s.id} - ${s.name} (Rs ${s.rate_per_1000.toFixed(2)} / Number)`
+                      : `#${s.id} - ${s.name} (Rs ${s.rate_per_1000.toFixed(2)}/1k)`}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* Target Link Input */}
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <label className="text-slate-300 font-semibold">
-                  3. Target {currentCategory?.name || 'Platform'} Link *
-                </label>
-                <span className="text-[11px] text-slate-400">
-                  {currentCategory ? `${currentCategory.name} URL` : 'Profile / Post / Video URL'}
-                </span>
-              </div>
-              <input
-                type="url"
-                required
-                value={link}
-                onChange={(e) => setLink(e.target.value)}
-                placeholder={getLinkPlaceholder()}
-                className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:border-sky-500"
-              />
-            </div>
+            {/* Target Link / Mobile Number or CNIC Input */}
+            {isSimDetails ? (
+              <>
+                <div>
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label className="text-slate-300 font-semibold">
+                      3. Mobile Number / CNIC *
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      Pakistani Mobile or CNIC
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    value={link}
+                    onChange={(e) => {
+                      setLink(e.target.value);
+                      if (inputError) setInputError(null);
+                    }}
+                    placeholder="Enter Mobile Number or CNIC"
+                    className={`w-full bg-[#070b16] border rounded-lg px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none ${
+                      inputError ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-sky-500'
+                    }`}
+                  />
+                  {inputError ? (
+                    <p className="mt-1.5 text-[11px] text-rose-400 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{inputError}</span>
+                    </p>
+                  ) : (
+                    <p className="mt-1.5 text-[11px] text-slate-400">
+                      Accepted: 11-digit mobile (e.g. 03001234567) or 13-digit CNIC (e.g. 3520212345671 or 35202-1234567-1)
+                    </p>
+                  )}
+                </div>
 
-            {/* Quantity Input */}
-            <div>
-              <div className="flex justify-between items-center mb-1.5">
-                <label className="text-slate-300 font-semibold">4. Quantity *</label>
-                {currentService && (
-                  <span className="text-[11px] text-slate-400 font-mono">
-                    Min: {currentService.min_quantity.toLocaleString()} · Max: {currentService.max_quantity.toLocaleString()}
+                {/* Delivery Email / WhatsApp Number (SIM Details ONLY) */}
+                <div>
+                  <div className="flex justify-between items-center mb-1.5">
+                    <label className="text-slate-300 font-semibold">
+                      4. Delivery Email / WhatsApp Number *
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      Where report will be sent
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    value={deliveryContact}
+                    onChange={(e) => {
+                      setDeliveryContact(e.target.value);
+                      if (deliveryError) setDeliveryError(null);
+                    }}
+                    placeholder="Enter your Email or WhatsApp Number"
+                    className={`w-full bg-[#070b16] border rounded-lg px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none ${
+                      deliveryError ? 'border-rose-500 focus:border-rose-400' : 'border-slate-700 focus:border-sky-500'
+                    }`}
+                  />
+                  {deliveryError ? (
+                    <p className="mt-1.5 text-[11px] text-rose-400 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{deliveryError}</span>
+                    </p>
+                  ) : (
+                    <p className="mt-1.5 text-[11px] text-slate-400">
+                      Enter your Email address (e.g. name@example.com) or Pakistani WhatsApp number (e.g. 03001234567)
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="text-slate-300 font-semibold">
+                    3. Target {currentCategory?.name || 'Platform'} Link *
+                  </label>
+                  <span className="text-[11px] text-slate-400">
+                    {currentCategory ? `${currentCategory.name} URL` : 'Profile / Post / Video URL'}
                   </span>
-                )}
+                </div>
+                <input
+                  type="url"
+                  required
+                  value={link}
+                  onChange={(e) => setLink(e.target.value)}
+                  placeholder={getLinkPlaceholder()}
+                  className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2.5 text-white font-mono placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                />
               </div>
-              <input
-                type="number"
-                required
-                min={currentService?.min_quantity || 10}
-                max={currentService?.max_quantity || 100000}
-                value={quantity}
-                onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 0)}
-                className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2.5 text-white font-mono focus:outline-none focus:border-sky-500"
-              />
-            </div>
+            )}
+
+            {/* Quantity Input (Hidden for SIM Details where each order is per single number) */}
+            {!isSimDetails && (
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="text-slate-300 font-semibold">4. Quantity *</label>
+                  {currentService && (
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      Min: {currentService.min_quantity.toLocaleString()} · Max: {currentService.max_quantity.toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  required
+                  min={currentService?.min_quantity || 10}
+                  max={currentService?.max_quantity || 100000}
+                  value={quantity}
+                  onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 0)}
+                  className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2.5 text-white font-mono focus:outline-none focus:border-sky-500"
+                />
+              </div>
+            )}
 
             {/* Dynamic Charge & Balance Verification Card */}
             <div className="p-4 rounded-xl bg-[#070b16] border border-slate-800 space-y-2">
+              {isSimDetails && currentService && (
+                <div className="flex justify-between items-center text-xs pb-1 border-b border-slate-800/80">
+                  <span className="text-slate-400">Price per Number (1 Order):</span>
+                  <span className="font-mono font-semibold text-sky-400 tabular-nums">
+                    Rs {currentService.rate_per_1000.toFixed(2)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between items-center text-xs">
-                <span className="text-slate-400">Total Calculated Cost:</span>
+                <span className="text-slate-400">{isSimDetails ? 'Final Order Price:' : 'Total Calculated Cost:'}</span>
                 <span className="text-lg font-bold font-mono text-emerald-400 tabular-nums">
                   Rs {charge.toFixed(2)}
                 </span>
@@ -381,7 +541,7 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
 
             <button
               type="submit"
-              disabled={submitting || hasInsufficientFunds}
+              disabled={submitting || hasInsufficientFunds || !currentService}
               className="w-full py-3 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-lg shadow-sky-600/30"
             >
               <span>{submitting ? 'Dispatching to Server...' : `Submit Order (Rs ${charge.toFixed(2)})`}</span>
@@ -400,7 +560,9 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-mono font-bold text-sky-400">Service #{currentService.id}</span>
                 <span className="text-xs font-semibold text-emerald-400">
-                  Rs {currentService.rate_per_1000.toFixed(2)} / 1k
+                  {isSimDetails
+                    ? `Rs ${currentService.rate_per_1000.toFixed(2)} / Number`
+                    : `Rs ${currentService.rate_per_1000.toFixed(2)} / 1k`}
                 </span>
               </div>
 
@@ -414,8 +576,10 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
                   <span className="text-white font-medium">Instant (0-15 mins)</span>
                 </div>
                 <div className="flex justify-between text-slate-400">
-                  <span>Speed:</span>
-                  <span className="text-white font-medium">10K - 50K / Day</span>
+                  <span>{isSimDetails ? 'Pricing Model:' : 'Speed:'}</span>
+                  <span className="text-white font-medium">
+                    {isSimDetails ? 'Per Number / Per Order' : '10K - 50K / Day'}
+                  </span>
                 </div>
                 <div className="flex justify-between text-slate-400">
                   <span>Refill Warranty:</span>
@@ -435,7 +599,9 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
                   <span>Important Instructions:</span>
                 </div>
                 <p className="leading-relaxed opacity-90">
-                  {currentService.description || 'Make sure profile or video is public. Do not change username or link while order is active.'}
+                  {currentService.description || (isSimDetails
+                    ? 'Enter a valid Pakistani Mobile Number or CNIC and your Delivery Email or WhatsApp Number for receiving your report.'
+                    : 'Make sure profile or video is public. Do not change username or link while order is active.')}
                 </p>
               </div>
             </div>
@@ -469,17 +635,25 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
             </p>
 
             <div className="p-3.5 rounded-lg bg-[#070b16] border border-slate-800 space-y-2 text-xs">
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-2">
                 <span className="text-slate-400">Service:</span>
                 <span className="font-medium text-white max-w-[220px] truncate">{currentService.name}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Link:</span>
-                <span className="font-mono text-sky-400 max-w-[220px] truncate">{link}</span>
+              <div className="flex justify-between gap-2">
+                <span className="text-slate-400">{isSimDetails ? 'Mobile Number / CNIC:' : 'Link:'}</span>
+                <span className="font-mono text-sky-400 max-w-[220px] truncate">{link.trim()}</span>
               </div>
-              <div className="flex justify-between">
+              {isSimDetails && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Delivery Email / WhatsApp:</span>
+                  <span className="font-mono text-emerald-300 max-w-[220px] truncate">{deliveryContact.trim()}</span>
+                </div>
+              )}
+              <div className="flex justify-between gap-2">
                 <span className="text-slate-400">Quantity:</span>
-                <span className="font-mono text-white">{quantity.toLocaleString()}</span>
+                <span className="font-mono text-white">
+                  {isSimDetails ? '1 Number (Per Order)' : effectiveQuantity.toLocaleString()}
+                </span>
               </div>
               <div className="flex justify-between border-t border-slate-800 pt-2 font-bold">
                 <span className="text-slate-300">Total Deducted:</span>
@@ -490,17 +664,19 @@ export const NewOrderPage: React.FC<NewOrderPageProps> = ({ onNavigate }) => {
             <div className="flex justify-end gap-3 pt-2">
               <button
                 type="button"
+                disabled={submitting}
                 onClick={() => setConfirmModal(false)}
-                className="px-4 py-2 rounded-lg bg-slate-800 text-xs font-semibold text-slate-300 hover:text-white"
+                className="px-4 py-2 rounded-lg bg-slate-800 text-xs font-semibold text-slate-300 hover:text-white disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={submitting}
                 onClick={executeOrder}
-                className="px-5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white shadow-md shadow-sky-600/30"
+                className="px-5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-xs font-semibold text-white shadow-md shadow-sky-600/30"
               >
-                Confirm & Dispatch
+                {submitting ? 'Dispatching...' : 'Confirm & Dispatch'}
               </button>
             </div>
           </div>

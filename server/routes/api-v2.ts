@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { db } from '../db.js';
+import { isSimDetailsCategoryName, validateSimDetailsInput, validateDeliveryContact } from '../simDetails.js';
 
 export const apiV2Router = Router();
 
@@ -10,16 +11,23 @@ async function handleSmmApi(req: Request, res: Response) {
   const key = (params.key || '').trim();
   const action = (params.action || '').trim().toLowerCase();
 
-  // Log incoming request
-  const logApi = (statusCode: number, responsePayload: any, userId?: number) => {
+  // Log incoming request (never store raw CNIC/mobile/contact values if redacted)
+  const logApi = (statusCode: number, responsePayload: any, userId?: number, redactLink = false) => {
     try {
+      const safeParams = redactLink
+        ? {
+            ...params,
+            ...(params.link ? { link: '***REDACTED***' } : {}),
+            ...(params.delivery_contact ? { delivery_contact: '***REDACTED***' } : {})
+          }
+        : params;
       db.prepare(`
         INSERT INTO api_logs (user_id, action, request_payload, response_payload, status_code, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(
         userId || null,
         action || 'unknown',
-        JSON.stringify(params),
+        JSON.stringify(safeParams),
         JSON.stringify(responsePayload),
         statusCode,
         new Date().toISOString()
@@ -98,9 +106,10 @@ async function handleSmmApi(req: Request, res: Response) {
     }
 
     const service = db.prepare(`
-      SELECT id, name, rate_per_1000, min_quantity, max_quantity, status
-      FROM services
-      WHERE id = ? AND status = 'active'
+      SELECT s.id, s.name, s.rate_per_1000, s.min_quantity, s.max_quantity, s.status, c.name as category_name
+      FROM services s
+      LEFT JOIN categories c ON s.category_id = c.id
+      WHERE s.id = ? AND s.status = 'active'
     `).get(serviceId) as any;
 
     if (!service) {
@@ -109,41 +118,79 @@ async function handleSmmApi(req: Request, res: Response) {
       return res.status(404).json(errorResp);
     }
 
-    if (quantity < service.min_quantity || quantity > service.max_quantity) {
-      const errorResp = {
-        error: `Quantity must be between ${service.min_quantity} and ${service.max_quantity}`
-      };
-      logApi(400, errorResp, user.id);
-      return res.status(400).json(errorResp);
-    }
+    const isSimDetails = isSimDetailsCategoryName(service.category_name);
+    let finalTargetInput = link;
+    let finalDeliveryContact: string | null = null;
+    let finalQuantity = quantity;
+    let charge = 0;
 
-    const charge = parseFloat(((quantity / 1000) * service.rate_per_1000).toFixed(2));
+    if (isSimDetails) {
+      const simCheck = validateSimDetailsInput(link);
+      if (!simCheck.valid) {
+        const errorResp = { error: simCheck.error };
+        logApi(400, errorResp, user.id, true);
+        return res.status(400).json(errorResp);
+      }
+      finalTargetInput = simCheck.normalized;
+
+      if (params.delivery_contact) {
+        const deliveryCheck = validateDeliveryContact(String(params.delivery_contact));
+        if (!deliveryCheck.valid) {
+          const errorResp = { error: deliveryCheck.error };
+          logApi(400, errorResp, user.id, true);
+          return res.status(400).json(errorResp);
+        }
+        finalDeliveryContact = deliveryCheck.normalized;
+      }
+
+      finalQuantity = 1;
+      charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+    } else {
+      if (quantity < service.min_quantity || quantity > service.max_quantity) {
+        const errorResp = {
+          error: `Quantity must be between ${service.min_quantity} and ${service.max_quantity}`
+        };
+        logApi(400, errorResp, user.id, isSimDetails);
+        return res.status(400).json(errorResp);
+      }
+
+      charge = parseFloat(((quantity / 1000) * service.rate_per_1000).toFixed(2));
+    }
 
     if (user.balance < charge) {
       const errorResp = {
         error: `Insufficient balance. Required: ${charge} PKR, Available: ${user.balance.toFixed(2)} PKR`
       };
-      logApi(400, errorResp, user.id);
+      logApi(400, errorResp, user.id, isSimDetails);
       return res.status(400).json(errorResp);
     }
 
     const now = new Date().toISOString();
-    const newBalance = user.balance - charge;
-    const newSpent = user.spent + charge;
 
-    // Transactional order creation and balance deduction
-    db.exec('BEGIN TRANSACTION');
+    // Atomic transactional order creation and balance deduction
+    db.exec('BEGIN IMMEDIATE TRANSACTION');
     try {
-      db.prepare(`
+      const deductRes = db.prepare(`
         UPDATE users
-        SET balance = ?, spent = ?
-        WHERE id = ?
-      `).run(newBalance, newSpent, user.id);
+        SET balance = ROUND(balance - ?, 2),
+            spent = ROUND(spent + ?, 2)
+        WHERE id = ? AND balance >= ?
+      `).run(charge, charge, user.id, charge);
+
+      if (deductRes.changes !== 1) {
+        db.exec('ROLLBACK');
+        const errorResp = { error: `Insufficient balance. Required: ${charge} PKR` };
+        logApi(400, errorResp, user.id, isSimDetails);
+        return res.status(400).json(errorResp);
+      }
+
+      const freshUser = db.prepare('SELECT balance FROM users WHERE id = ?').get(user.id) as any;
+      const newBalance = freshUser.balance;
 
       const orderResult = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(user.id, service.id, link, quantity, charge, quantity, now, now);
+        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
+      `).run(user.id, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
 
       const orderId = orderResult.lastInsertRowid;
 
@@ -155,12 +202,12 @@ async function handleSmmApi(req: Request, res: Response) {
       db.exec('COMMIT');
 
       const successResp = { order: Number(orderId) };
-      logApi(200, successResp, user.id);
+      logApi(200, successResp, user.id, isSimDetails);
       return res.json(successResp);
     } catch (err: any) {
-      db.exec('ROLLBACK');
+      try { db.exec('ROLLBACK'); } catch {}
       const errorResp = { error: 'Failed to create order: ' + err.message };
-      logApi(500, errorResp, user.id);
+      logApi(500, errorResp, user.id, isSimDetails);
       return res.status(500).json(errorResp);
     }
   }

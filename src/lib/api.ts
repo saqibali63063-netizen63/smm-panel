@@ -132,7 +132,7 @@ export const api = {
     return apiRequest<{ orders: Order[] }>(`/api/orders?${query.toString()}`);
   },
 
-  createOrder: (body: { service_id: number; link: string; quantity: number }) =>
+  createOrder: (body: { service_id: number; link: string; quantity: number; delivery_contact?: string }) =>
     apiRequest<{ success: boolean; order_id: number; charge: number; balance: number; message: string }>('/api/orders', {
       method: 'POST',
       body: JSON.stringify(body)

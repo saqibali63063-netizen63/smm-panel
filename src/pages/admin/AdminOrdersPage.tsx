@@ -8,8 +8,11 @@ import {
   AlertCircle,
   X,
   ExternalLink,
-  Edit2
+  Edit2,
+  Copy,
+  Check
 } from 'lucide-react';
+import { isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 
 export const AdminOrdersPage: React.FC<{ onNavigate: (view: string) => void }> = () => {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -24,6 +27,13 @@ export const AdminOrdersPage: React.FC<{ onNavigate: (view: string) => void }> =
   const [remains, setRemains] = useState<number>(0);
   const [updating, setUpdating] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const handleCopy = (key: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 1500);
+  };
 
   const fetchOrders = () => {
     setLoading(true);
@@ -168,10 +178,45 @@ export const AdminOrdersPage: React.FC<{ onNavigate: (view: string) => void }> =
                     <td className="py-3 px-4 font-medium text-slate-200 max-w-xs truncate">
                       {o.service_name}
                     </td>
-                    <td className="py-3 px-4 font-mono text-slate-400 max-w-[150px] truncate">
-                      <a href={o.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline">
-                        {o.link}
-                      </a>
+                    <td className="py-3 px-4 font-mono text-slate-400 max-w-[220px]">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          {isSimDetailsCategoryName(o.category_name) || !/^https?:\/\//i.test(o.link) ? (
+                            <span className="text-amber-300 font-mono truncate select-all" title={`Target: ${o.link}`}>
+                              {o.link}
+                            </span>
+                          ) : (
+                            <a href={o.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline truncate">
+                              {o.link}
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(`${o.id}-target`, o.link)}
+                            className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white shrink-0"
+                            title="Copy Service Target"
+                          >
+                            {copiedKey === `${o.id}-target` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          </button>
+                        </div>
+
+                        {o.delivery_contact && (
+                          <div className="flex items-center gap-1.5 text-[10px]">
+                            <span className="text-slate-500 font-sans shrink-0">Delivery:</span>
+                            <span className="text-emerald-300 font-mono truncate select-all" title={o.delivery_contact}>
+                              {o.delivery_contact}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(`${o.id}-delivery`, o.delivery_contact!)}
+                              className="p-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white shrink-0"
+                              title="Copy Delivery Contact"
+                            >
+                              {copiedKey === `${o.id}-delivery` ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4 font-mono tabular-nums">{o.quantity.toLocaleString()}</td>
                     <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums">
@@ -229,6 +274,50 @@ export const AdminOrdersPage: React.FC<{ onNavigate: (view: string) => void }> =
               <p className="text-xs text-slate-400">
                 Client: {editingOrder.username} · Charge: Rs {editingOrder.charge.toFixed(2)}
               </p>
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="p-3 rounded-lg bg-[#070b16] border border-slate-800 text-xs space-y-1">
+                <div className="text-[11px] font-semibold text-slate-400">
+                  {isSimDetailsCategoryName(editingOrder.category_name)
+                    ? 'Service Target (Mobile Number / CNIC):'
+                    : 'Submitted Target Link:'}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-sky-300 break-all select-all">{editingOrder.link}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(`modal-${editingOrder.id}-target`, editingOrder.link)}
+                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] flex items-center gap-1 shrink-0"
+                  >
+                    {copiedKey === `modal-${editingOrder.id}-target` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedKey === `modal-${editingOrder.id}-target` ? 'Copied' : 'Copy'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {(isSimDetailsCategoryName(editingOrder.category_name) || editingOrder.delivery_contact) && (
+                <div className="p-3 rounded-lg bg-[#070b16] border border-emerald-900/50 text-xs space-y-1">
+                  <div className="text-[11px] font-semibold text-emerald-400">
+                    Delivery Contact (Customer Email / WhatsApp Number):
+                  </div>
+                  {editingOrder.delivery_contact ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-emerald-200 break-all select-all">{editingOrder.delivery_contact}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`modal-${editingOrder.id}-delivery`, editingOrder.delivery_contact!)}
+                        className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] flex items-center gap-1 shrink-0"
+                      >
+                        {copiedKey === `modal-${editingOrder.id}-delivery` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedKey === `modal-${editingOrder.id}-delivery` ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-slate-500 italic">Not provided</span>
+                  )}
+                </div>
+              )}
             </div>
 
             <form onSubmit={handleSaveStatus} className="space-y-4 text-xs">

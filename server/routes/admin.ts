@@ -49,10 +49,13 @@ adminRouter.get('/overview', (req: AuthRequest, res: Response) => {
 
   // Recent 5 orders
   const recentOrders = db.prepare(`
-    SELECT o.id, o.charge, o.quantity, o.status, o.created_at, u.username, s.name as service_name
+    SELECT o.id, o.charge, o.quantity, o.status, o.created_at, o.link, u.username,
+           COALESCE(s.name, 'Service #' || o.service_id) as service_name,
+           COALESCE(c.name, 'General') as category_name
     FROM orders o
     JOIN users u ON o.user_id = u.id
-    JOIN services s ON o.service_id = s.id
+    LEFT JOIN services s ON o.service_id = s.id
+    LEFT JOIN categories c ON s.category_id = c.id
     ORDER BY o.id DESC LIMIT 6
   `).all() as any[];
 
@@ -181,6 +184,7 @@ adminRouter.get('/orders', (req: AuthRequest, res: Response) => {
   let query = `
     SELECT o.*, u.username, u.email, 
            COALESCE(s.name, 'Service #' || o.service_id) as service_name, 
+           s.category_id as category_id,
            COALESCE(c.name, 'General') as category_name
     FROM orders o
     JOIN users u ON o.user_id = u.id
@@ -197,8 +201,8 @@ adminRouter.get('/orders', (req: AuthRequest, res: Response) => {
   }
 
   if (search) {
-    conditions.push('(LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR LOWER(u.username) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)');
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    conditions.push("(LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR LOWER(COALESCE(o.delivery_contact, '')) LIKE ? OR LOWER(u.username) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
   }
 
   if (conditions.length > 0) {

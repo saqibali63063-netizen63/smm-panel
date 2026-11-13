@@ -473,6 +473,13 @@ export function initDb() {
     db.exec(`ALTER TABLE categories ADD COLUMN image_url TEXT;`);
   } catch {}
 
+  try {
+    const orderCols = db.prepare(`PRAGMA table_info(orders)`).all() as Array<{ name: string }>;
+    if (!orderCols.some((c) => c.name === 'delivery_contact')) {
+      db.exec(`ALTER TABLE orders ADD COLUMN delivery_contact TEXT;`);
+    }
+  } catch {}
+
   seedInitialData();
 }
 

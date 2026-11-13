@@ -12,8 +12,11 @@ import {
   AlertCircle,
   X,
   Clock,
-  Layers
+  Layers,
+  Copy,
+  Check
 } from 'lucide-react';
+import { isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 
 interface MyOrdersPageProps {
   onNavigate: (view: string) => void;
@@ -27,6 +30,7 @@ export const MyOrdersPage: React.FC<MyOrdersPageProps> = ({ onNavigate }) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [copiedField, setCopiedField] = useState<'target' | 'delivery' | null>(null);
 
   const fetchOrders = () => {
     setLoading(true);
@@ -180,10 +184,23 @@ export const MyOrdersPage: React.FC<MyOrdersPageProps> = ({ onNavigate }) => {
                     <td className="py-3 px-4 font-medium text-white max-w-xs truncate">
                       {o.service_name}
                     </td>
-                    <td className="py-3 px-4 font-mono text-slate-400 max-w-[160px] truncate">
-                      <a href={o.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline">
-                        {o.link}
-                      </a>
+                    <td className="py-3 px-4 font-mono text-slate-400 max-w-[200px]">
+                      {isSimDetailsCategoryName(o.category_name) || !/^https?:\/\//i.test(o.link) ? (
+                        <div className="space-y-0.5">
+                          <div className="text-sky-300 font-mono truncate select-all" title={o.link}>
+                            {o.link}
+                          </div>
+                          {o.delivery_contact && (
+                            <div className="text-[10px] text-emerald-300/90 font-mono truncate" title={`Delivery: ${o.delivery_contact}`}>
+                              Delivery: {o.delivery_contact}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <a href={o.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline block truncate">
+                          {o.link}
+                        </a>
+                      )}
                     </td>
                     <td className="py-3 px-4 font-mono tabular-nums">{o.quantity.toLocaleString()}</td>
                     <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums">
@@ -262,12 +279,65 @@ export const MyOrdersPage: React.FC<MyOrdersPageProps> = ({ onNavigate }) => {
             </div>
 
             <div className="grid grid-cols-2 gap-3 p-3.5 rounded-lg bg-[#080d1a] border border-slate-800 text-xs">
-              <div>
-                <span className="text-slate-500 block">Link:</span>
-                <a href={selectedOrder.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline font-mono truncate block">
-                  {selectedOrder.link}
-                </a>
+              <div className={selectedOrder.delivery_contact || isSimDetailsCategoryName(selectedOrder.category_name) ? 'col-span-2' : ''}>
+                <span className="text-slate-500 block">
+                  {isSimDetailsCategoryName(selectedOrder.category_name)
+                    ? 'Service Target (Mobile Number / CNIC):'
+                    : 'Link:'}
+                </span>
+                {isSimDetailsCategoryName(selectedOrder.category_name) || !/^https?:\/\//i.test(selectedOrder.link) ? (
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <span className="text-sky-300 font-mono font-semibold select-all break-all">
+                      {selectedOrder.link}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedOrder.link);
+                        setCopiedField('target');
+                        setTimeout(() => setCopiedField(null), 1500);
+                      }}
+                      className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0"
+                      title="Copy Service Target"
+                    >
+                      {copiedField === 'target' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    </button>
+                  </div>
+                ) : (
+                  <a href={selectedOrder.link} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline font-mono truncate block">
+                    {selectedOrder.link}
+                  </a>
+                )}
               </div>
+
+              {(isSimDetailsCategoryName(selectedOrder.category_name) || selectedOrder.delivery_contact) && (
+                <div className="col-span-2 pt-2 border-t border-slate-800/70">
+                  <span className="text-slate-500 block">
+                    Delivery Contact (Email / WhatsApp Number):
+                  </span>
+                  {selectedOrder.delivery_contact ? (
+                    <div className="flex items-center justify-between gap-2 mt-0.5">
+                      <span className="text-emerald-300 font-mono font-semibold select-all break-all">
+                        {selectedOrder.delivery_contact}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(selectedOrder.delivery_contact!);
+                          setCopiedField('delivery');
+                          setTimeout(() => setCopiedField(null), 1500);
+                        }}
+                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0"
+                        title="Copy Delivery Contact"
+                      >
+                        {copiedField === 'delivery' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-slate-500 italic">Not provided</span>
+                  )}
+                </div>
+              )}
               <div>
                 <span className="text-slate-500 block">Quantity:</span>
                 <span className="font-mono text-white">{selectedOrder.quantity.toLocaleString()}</span>

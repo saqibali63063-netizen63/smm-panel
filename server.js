@@ -416,6 +416,9 @@ function initDb() {
 	try {
 		db.exec(`ALTER TABLE categories ADD COLUMN image_url TEXT;`);
 	} catch {}
+	try {
+		if (!db.prepare(`PRAGMA table_info(orders)`).all().some((c) => c.name === "delivery_contact")) db.exec(`ALTER TABLE orders ADD COLUMN delivery_contact TEXT;`);
+	} catch {}
 	seedInitialData();
 }
 function getUploadsDirectory() {
@@ -970,6 +973,90 @@ function requireAdmin(req, res, next) {
 		next();
 	});
 }
+// server/simDetails.ts
+var SIM_DETAILS_CATEGORY_NAME = "sim details";
+function isSimDetailsCategoryName(categoryName) {
+	return (categoryName || "").trim().toLowerCase() === SIM_DETAILS_CATEGORY_NAME;
+}
+function validateSimDetailsInput(rawInput) {
+	const trimmed = (rawInput || "").trim();
+	if (!trimmed) return {
+		valid: false,
+		normalized: "",
+		error: "Please enter a valid Pakistani Mobile Number or CNIC."
+	};
+	if (/[a-zA-Z:/@.]/.test(trimmed)) return {
+		valid: false,
+		normalized: trimmed,
+		error: "Invalid format. Enter an 11-digit Pakistani Mobile Number (e.g. 03001234567) or 13-digit CNIC (e.g. 3520212345671 or 35202-1234567-1)."
+	};
+	if (/^\d{5}-\d{7}-\d$/.test(trimmed)) {
+		const digits = trimmed.replace(/-/g, "");
+		if (/^0+$/.test(digits)) return {
+			valid: false,
+			normalized: trimmed,
+			error: "Please enter a valid 13-digit Pakistani CNIC number."
+		};
+		return {
+			valid: true,
+			normalized: trimmed,
+			type: "cnic"
+		};
+	}
+	if (/^\d{13}$/.test(trimmed)) {
+		if (/^0+$/.test(trimmed)) return {
+			valid: false,
+			normalized: trimmed,
+			error: "Please enter a valid 13-digit Pakistani CNIC number."
+		};
+		return {
+			valid: true,
+			normalized: trimmed,
+			type: "cnic"
+		};
+	}
+	if (/^03\d{2}[-\s]?\d{7}$/.test(trimmed) || /^(\+92|92)3\d{9}$/.test(trimmed)) return {
+		valid: true,
+		normalized: trimmed,
+		type: "mobile"
+	};
+	return {
+		valid: false,
+		normalized: trimmed,
+		error: "Invalid Mobile Number or CNIC. Enter an 11-digit mobile number (e.g. 03001234567) or 13-digit CNIC (e.g. 3520212345671 or 35202-1234567-1)."
+	};
+}
+function validateDeliveryContact(rawInput) {
+	const trimmed = (rawInput || "").trim();
+	if (!trimmed) return {
+		valid: false,
+		normalized: "",
+		error: "Delivery Email or WhatsApp Number is required."
+	};
+	if (trimmed.includes("@") || /[a-zA-Z]/.test(trimmed)) {
+		if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed)) return {
+			valid: false,
+			normalized: trimmed,
+			error: "Please enter a valid Email address (e.g. name@example.com) or a Pakistani WhatsApp number (e.g. 03001234567)."
+		};
+		return {
+			valid: true,
+			normalized: trimmed,
+			type: "email"
+		};
+	}
+	const compact = trimmed.replace(/[\s-]/g, "");
+	if (/^(03\d{9}|(\+92|92)3\d{9})$/.test(compact)) return {
+		valid: true,
+		normalized: trimmed,
+		type: "whatsapp"
+	};
+	return {
+		valid: false,
+		normalized: trimmed,
+		error: "Please enter a valid Pakistani WhatsApp number (e.g. 03001234567 or +923001234567) or a valid Email address."
+	};
+}
 // server/routes/user.ts
 var userRouter = Router();
 userRouter.post("/auth/register", (req, res) => {
@@ -1189,6 +1276,7 @@ userRouter.get("/orders", requireAuth, (req, res) => {
 	let query = `
     SELECT o.*, 
            COALESCE(s.name, 'Service #' || o.service_id) as service_name, 
+           s.category_id as category_id,
            COALESCE(c.name, 'General') as category_name, 
            COALESCE(s.refill_supported, 0) as refill_supported, 
            COALESCE(s.cancel_supported, 0) as cancel_supported
@@ -1204,8 +1292,8 @@ userRouter.get("/orders", requireAuth, (req, res) => {
 		params.push(status.toLowerCase());
 	}
 	if (search) {
-		query += ` AND (LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)`;
-		params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+		query += ` AND (LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR LOWER(COALESCE(o.delivery_contact, '')) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)`;
+		params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
 	}
 	query += ` ORDER BY o.id DESC LIMIT 200`;
 	const orders = db.prepare(query).all(...params);
@@ -1213,29 +1301,58 @@ userRouter.get("/orders", requireAuth, (req, res) => {
 });
 userRouter.post("/orders", requireAuth, (req, res) => {
 	const userId = req.user.id;
-	const { service_id, link, quantity } = req.body;
+	const { service_id, link, quantity, delivery_contact } = req.body;
 	const sId = parseInt(service_id, 10);
-	const q = parseInt(quantity, 10);
+	const parsedQty = parseInt(quantity, 10);
 	const cleanLink = (link || "").trim();
-	if (!sId || !q || isNaN(q) || q <= 0 || !cleanLink) return res.status(400).json({ error: "Please provide valid service, quantity, and link." });
+	const cleanDeliveryContact = (delivery_contact || "").trim();
+	if (!sId || !cleanLink) return res.status(400).json({ error: "Please provide valid service and target input." });
 	const service = db.prepare(`
-    SELECT * FROM services WHERE id = ? AND status = 'active'
+    SELECT s.*, c.name as category_name
+    FROM services s
+    LEFT JOIN categories c ON s.category_id = c.id
+    WHERE s.id = ? AND s.status = 'active'
   `).get(sId);
 	if (!service) return res.status(404).json({ error: "Selected service is currently unavailable." });
-	if (q < service.min_quantity || q > service.max_quantity) return res.status(400).json({ error: `Quantity for this service must be between ${service.min_quantity.toLocaleString()} and ${service.max_quantity.toLocaleString()}.` });
-	const charge = parseFloat((q / 1e3 * service.rate_per_1000).toFixed(2));
-	const user = db.prepare("SELECT balance, spent FROM users WHERE id = ?").get(userId);
-	if (user.balance < charge) return res.status(400).json({ error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${user.balance.toFixed(2)}. Please Add Funds.` });
+	const isSimDetails = isSimDetailsCategoryName(service.category_name);
+	let finalTargetInput = cleanLink;
+	let finalDeliveryContact = null;
+	let finalQuantity = parsedQty;
+	let charge = 0;
+	if (isSimDetails) {
+		const simCheck = validateSimDetailsInput(cleanLink);
+		if (!simCheck.valid) return res.status(400).json({ error: simCheck.error });
+		finalTargetInput = simCheck.normalized;
+		const deliveryCheck = validateDeliveryContact(cleanDeliveryContact);
+		if (!deliveryCheck.valid) return res.status(400).json({ error: deliveryCheck.error });
+		finalDeliveryContact = deliveryCheck.normalized;
+		finalQuantity = 1;
+		charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+	} else {
+		if (!parsedQty || isNaN(parsedQty) || parsedQty <= 0) return res.status(400).json({ error: "Please provide a valid quantity." });
+		if (parsedQty < service.min_quantity || parsedQty > service.max_quantity) return res.status(400).json({ error: `Quantity for this service must be between ${service.min_quantity.toLocaleString()} and ${service.max_quantity.toLocaleString()}.` });
+		charge = parseFloat((parsedQty / 1e3 * service.rate_per_1000).toFixed(2));
+	}
+	const userCheck = db.prepare("SELECT balance FROM users WHERE id = ?").get(userId);
+	if (!userCheck || userCheck.balance < charge) return res.status(400).json({ error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(userCheck?.balance || 0).toFixed(2)}. Please Add Funds.` });
 	const now = (/* @__PURE__ */ new Date()).toISOString();
-	const newBalance = user.balance - charge;
-	const newSpent = user.spent + charge;
-	db.exec("BEGIN TRANSACTION");
+	db.exec("BEGIN IMMEDIATE TRANSACTION");
 	try {
-		db.prepare("UPDATE users SET balance = ?, spent = ? WHERE id = ?").run(newBalance, newSpent, userId);
+		if (db.prepare(`
+      UPDATE users
+      SET balance = ROUND(balance - ?, 2),
+          spent = ROUND(spent + ?, 2)
+      WHERE id = ? AND balance >= ?
+    `).run(charge, charge, userId, charge).changes !== 1) {
+			db.exec("ROLLBACK");
+			const freshUser = db.prepare("SELECT balance FROM users WHERE id = ?").get(userId);
+			return res.status(400).json({ error: `Insufficient balance. Required: Rs ${charge.toFixed(2)}, Available: Rs ${(freshUser?.balance || 0).toFixed(2)}. Please Add Funds.` });
+		}
+		const newBalance = db.prepare("SELECT balance FROM users WHERE id = ?").get(userId).balance;
 		const orderRes = db.prepare(`
-      INSERT INTO orders (user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-    `).run(userId, service.id, cleanLink, q, charge, q, now, now);
+      INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
+    `).run(userId, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now);
 		const orderId = Number(orderRes.lastInsertRowid);
 		db.prepare(`
       INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
@@ -1250,7 +1367,9 @@ userRouter.post("/orders", requireAuth, (req, res) => {
 			message: `Order #${orderId} submitted successfully!`
 		});
 	} catch (err) {
-		db.exec("ROLLBACK");
+		try {
+			db.exec("ROLLBACK");
+		} catch {}
 		return res.status(500).json({ error: "Order placement failed: " + err.message });
 	}
 });
@@ -1274,7 +1393,12 @@ userRouter.post("/orders/mass", requireAuth, (req, res) => {
 		const sId = parseInt(parts[0], 10);
 		const qty = parseInt(parts[1], 10);
 		const link = parts[2];
-		const service = db.prepare("SELECT * FROM services WHERE id = ? AND status = 'active'").get(sId);
+		const service = db.prepare(`
+      SELECT s.*, c.name as category_name
+      FROM services s
+      LEFT JOIN categories c ON s.category_id = c.id
+      WHERE s.id = ? AND s.status = 'active'
+    `).get(sId);
 		if (!service) {
 			results.push({
 				line: i + 1,
@@ -1282,14 +1406,39 @@ userRouter.post("/orders/mass", requireAuth, (req, res) => {
 			});
 			continue;
 		}
-		if (qty < service.min_quantity || qty > service.max_quantity) {
-			results.push({
-				line: i + 1,
-				error: `Quantity must be ${service.min_quantity}-${service.max_quantity}`
-			});
-			continue;
+		let finalQty = qty;
+		let finalDelivery = null;
+		let charge = 0;
+		if (isSimDetailsCategoryName(service.category_name)) {
+			const simCheck = validateSimDetailsInput(link);
+			if (!simCheck.valid) {
+				results.push({
+					line: i + 1,
+					error: simCheck.error
+				});
+				continue;
+			}
+			const deliveryCheck = validateDeliveryContact(parts[3] || "");
+			if (!deliveryCheck.valid) {
+				results.push({
+					line: i + 1,
+					error: `SIM Details requires delivery contact (4th column): ${deliveryCheck.error}`
+				});
+				continue;
+			}
+			finalDelivery = deliveryCheck.normalized;
+			finalQty = 1;
+			charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+		} else {
+			if (qty < service.min_quantity || qty > service.max_quantity) {
+				results.push({
+					line: i + 1,
+					error: `Quantity must be ${service.min_quantity}-${service.max_quantity}`
+				});
+				continue;
+			}
+			charge = parseFloat((qty / 1e3 * service.rate_per_1000).toFixed(2));
 		}
-		const charge = parseFloat((qty / 1e3 * service.rate_per_1000).toFixed(2));
 		if (user.balance < charge) {
 			results.push({
 				line: i + 1,
@@ -1298,15 +1447,15 @@ userRouter.post("/orders/mass", requireAuth, (req, res) => {
 			continue;
 		}
 		const now = (/* @__PURE__ */ new Date()).toISOString();
-		const newBal = user.balance - charge;
-		const newSpent = user.spent + charge;
+		const newBal = parseFloat((user.balance - charge).toFixed(2));
+		const newSpent = parseFloat((user.spent + charge).toFixed(2));
 		db.exec("BEGIN TRANSACTION");
 		try {
 			db.prepare("UPDATE users SET balance = ?, spent = ? WHERE id = ?").run(newBal, newSpent, userId);
 			const resOrder = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(userId, service.id, link, qty, charge, qty, now, now);
+        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
+      `).run(userId, service.id, link, finalDelivery, finalQty, charge, finalQty, now, now);
 			const oId = Number(resOrder.lastInsertRowid);
 			db.prepare(`
         INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
@@ -1620,10 +1769,13 @@ adminRouter.get("/overview", (req, res) => {
 	const revenueTotal = db.prepare("SELECT SUM(amount) as total FROM payment_requests WHERE status = 'approved'").get();
 	const spentTotal = db.prepare("SELECT SUM(charge) as total FROM orders WHERE status != 'Canceled'").get();
 	const recentOrders = db.prepare(`
-    SELECT o.id, o.charge, o.quantity, o.status, o.created_at, u.username, s.name as service_name
+    SELECT o.id, o.charge, o.quantity, o.status, o.created_at, o.link, u.username,
+           COALESCE(s.name, 'Service #' || o.service_id) as service_name,
+           COALESCE(c.name, 'General') as category_name
     FROM orders o
     JOIN users u ON o.user_id = u.id
-    JOIN services s ON o.service_id = s.id
+    LEFT JOIN services s ON o.service_id = s.id
+    LEFT JOIN categories c ON s.category_id = c.id
     ORDER BY o.id DESC LIMIT 6
   `).all();
 	const recentPayments = db.prepare(`
@@ -1721,6 +1873,7 @@ adminRouter.get("/orders", (req, res) => {
 	let query = `
     SELECT o.*, u.username, u.email, 
            COALESCE(s.name, 'Service #' || o.service_id) as service_name, 
+           s.category_id as category_id,
            COALESCE(c.name, 'General') as category_name
     FROM orders o
     JOIN users u ON o.user_id = u.id
@@ -1735,8 +1888,8 @@ adminRouter.get("/orders", (req, res) => {
 		params.push(status.toLowerCase());
 	}
 	if (search) {
-		conditions.push("(LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR LOWER(u.username) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)");
-		params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+		conditions.push("(LOWER(s.name) LIKE ? OR LOWER(o.link) LIKE ? OR LOWER(COALESCE(o.delivery_contact, '')) LIKE ? OR LOWER(u.username) LIKE ? OR CAST(o.id AS TEXT) LIKE ?)");
+		params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
 	}
 	if (conditions.length > 0) query += " WHERE " + conditions.join(" AND ");
 	query += " ORDER BY o.id DESC LIMIT 200";
@@ -2422,12 +2575,17 @@ async function handleSmmApi(req, res) {
 	};
 	const key = (params.key || "").trim();
 	const action = (params.action || "").trim().toLowerCase();
-	const logApi = (statusCode, responsePayload, userId) => {
+	const logApi = (statusCode, responsePayload, userId, redactLink = false) => {
 		try {
+			const safeParams = redactLink ? {
+				...params,
+				...params.link ? { link: "***REDACTED***" } : {},
+				...params.delivery_contact ? { delivery_contact: "***REDACTED***" } : {}
+			} : params;
 			db.prepare(`
         INSERT INTO api_logs (user_id, action, request_payload, response_payload, status_code, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
-      `).run(userId || null, action || "unknown", JSON.stringify(params), JSON.stringify(responsePayload), statusCode, (/* @__PURE__ */ new Date()).toISOString());
+      `).run(userId || null, action || "unknown", JSON.stringify(safeParams), JSON.stringify(responsePayload), statusCode, (/* @__PURE__ */ new Date()).toISOString());
 		} catch {}
 	};
 	if (!key) {
@@ -2485,52 +2643,86 @@ async function handleSmmApi(req, res) {
 			return res.status(400).json(errorResp);
 		}
 		const service = db.prepare(`
-      SELECT id, name, rate_per_1000, min_quantity, max_quantity, status
-      FROM services
-      WHERE id = ? AND status = 'active'
+      SELECT s.id, s.name, s.rate_per_1000, s.min_quantity, s.max_quantity, s.status, c.name as category_name
+      FROM services s
+      LEFT JOIN categories c ON s.category_id = c.id
+      WHERE s.id = ? AND s.status = 'active'
     `).get(serviceId);
 		if (!service) {
 			const errorResp = { error: "Service not found or currently inactive" };
 			logApi(404, errorResp, user.id);
 			return res.status(404).json(errorResp);
 		}
-		if (quantity < service.min_quantity || quantity > service.max_quantity) {
-			const errorResp = { error: `Quantity must be between ${service.min_quantity} and ${service.max_quantity}` };
-			logApi(400, errorResp, user.id);
-			return res.status(400).json(errorResp);
+		const isSimDetails = isSimDetailsCategoryName(service.category_name);
+		let finalTargetInput = link;
+		let finalDeliveryContact = null;
+		let finalQuantity = quantity;
+		let charge = 0;
+		if (isSimDetails) {
+			const simCheck = validateSimDetailsInput(link);
+			if (!simCheck.valid) {
+				const errorResp = { error: simCheck.error };
+				logApi(400, errorResp, user.id, true);
+				return res.status(400).json(errorResp);
+			}
+			finalTargetInput = simCheck.normalized;
+			if (params.delivery_contact) {
+				const deliveryCheck = validateDeliveryContact(String(params.delivery_contact));
+				if (!deliveryCheck.valid) {
+					const errorResp = { error: deliveryCheck.error };
+					logApi(400, errorResp, user.id, true);
+					return res.status(400).json(errorResp);
+				}
+				finalDeliveryContact = deliveryCheck.normalized;
+			}
+			finalQuantity = 1;
+			charge = parseFloat(Number(service.rate_per_1000).toFixed(2));
+		} else {
+			if (quantity < service.min_quantity || quantity > service.max_quantity) {
+				const errorResp = { error: `Quantity must be between ${service.min_quantity} and ${service.max_quantity}` };
+				logApi(400, errorResp, user.id, isSimDetails);
+				return res.status(400).json(errorResp);
+			}
+			charge = parseFloat((quantity / 1e3 * service.rate_per_1000).toFixed(2));
 		}
-		const charge = parseFloat((quantity / 1e3 * service.rate_per_1000).toFixed(2));
 		if (user.balance < charge) {
 			const errorResp = { error: `Insufficient balance. Required: ${charge} PKR, Available: ${user.balance.toFixed(2)} PKR` };
-			logApi(400, errorResp, user.id);
+			logApi(400, errorResp, user.id, isSimDetails);
 			return res.status(400).json(errorResp);
 		}
 		const now = (/* @__PURE__ */ new Date()).toISOString();
-		const newBalance = user.balance - charge;
-		const newSpent = user.spent + charge;
-		db.exec("BEGIN TRANSACTION");
+		db.exec("BEGIN IMMEDIATE TRANSACTION");
 		try {
-			db.prepare(`
+			if (db.prepare(`
         UPDATE users
-        SET balance = ?, spent = ?
-        WHERE id = ?
-      `).run(newBalance, newSpent, user.id);
+        SET balance = ROUND(balance - ?, 2),
+            spent = ROUND(spent + ?, 2)
+        WHERE id = ? AND balance >= ?
+      `).run(charge, charge, user.id, charge).changes !== 1) {
+				db.exec("ROLLBACK");
+				const errorResp = { error: `Insufficient balance. Required: ${charge} PKR` };
+				logApi(400, errorResp, user.id, isSimDetails);
+				return res.status(400).json(errorResp);
+			}
+			const newBalance = db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance;
 			const orderId = db.prepare(`
-        INSERT INTO orders (user_id, service_id, link, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
-      `).run(user.id, service.id, link, quantity, charge, quantity, now, now).lastInsertRowid;
+        INSERT INTO orders (user_id, service_id, link, delivery_contact, quantity, charge, start_count, remains, status, mode, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'Pending', 'Auto', ?, ?)
+      `).run(user.id, service.id, finalTargetInput, finalDeliveryContact, finalQuantity, charge, finalQuantity, now, now).lastInsertRowid;
 			db.prepare(`
         INSERT INTO transactions (user_id, type, amount, balance_after, description, reference_id, created_at)
         VALUES (?, 'order', ?, ?, ?, ?, ?)
       `).run(user.id, -charge, newBalance, `API Order #${orderId} - ${service.name}`, `ORD-${orderId}`, now);
 			db.exec("COMMIT");
 			const successResp = { order: Number(orderId) };
-			logApi(200, successResp, user.id);
+			logApi(200, successResp, user.id, isSimDetails);
 			return res.json(successResp);
 		} catch (err) {
-			db.exec("ROLLBACK");
+			try {
+				db.exec("ROLLBACK");
+			} catch {}
 			const errorResp = { error: "Failed to create order: " + err.message };
-			logApi(500, errorResp, user.id);
+			logApi(500, errorResp, user.id, isSimDetails);
 			return res.status(500).json(errorResp);
 		}
 	}

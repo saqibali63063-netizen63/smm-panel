@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../lib/api.ts';
 import type { Category, Service } from '../../types/index.ts';
 import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
+import { isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 import { Search, Info, X, Zap, ChevronRight, Check } from 'lucide-react';
 
 interface ServicesPageProps {
@@ -162,7 +163,9 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ onNavigate }) => {
                 </td>
               </tr>
             ) : (
-              filteredServices.map(s => (
+              filteredServices.map(s => {
+                const isSimDetails = isSimDetailsCategoryName(s.category_name);
+                return (
                 <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
                   <td className="py-3 px-4 font-mono font-medium text-slate-400">#{s.id}</td>
                   <td className="py-3 px-4 font-medium text-white max-w-lg">
@@ -179,10 +182,15 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ onNavigate }) => {
                     </div>
                   </td>
                   <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums whitespace-nowrap">
-                    {formatPrice(s.rate_per_1000)}
+                    <div>{formatPrice(s.rate_per_1000)}</div>
+                    {isSimDetails && (
+                      <span className="block text-[10px] font-sans font-semibold text-sky-400">
+                        per Number
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 px-4 font-mono text-slate-400 tabular-nums whitespace-nowrap">
-                    {s.min_quantity.toLocaleString()} / {s.max_quantity.toLocaleString()}
+                    {isSimDetails ? '1 Order' : `${s.min_quantity.toLocaleString()} / ${s.max_quantity.toLocaleString()}`}
                   </td>
                   <td className="py-3 px-4 whitespace-nowrap">
                     {s.refill_supported ? (
@@ -209,7 +217,8 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ onNavigate }) => {
                     </button>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
@@ -235,15 +244,21 @@ export const ServicesPage: React.FC<ServicesPageProps> = ({ onNavigate }) => {
 
             <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-[#080d1a] border border-slate-800 text-xs">
               <div>
-                <span className="text-slate-500 block">Rate per 1000:</span>
+                <span className="text-slate-500 block">
+                  {isSimDetailsCategoryName(activeModalService.category_name) ? 'Price per Number:' : 'Rate per 1000:'}
+                </span>
                 <span className="font-mono font-bold text-emerald-400 text-sm">
                   {formatPrice(activeModalService.rate_per_1000)}
                 </span>
               </div>
               <div>
-                <span className="text-slate-500 block">Min / Max Quantity:</span>
+                <span className="text-slate-500 block">
+                  {isSimDetailsCategoryName(activeModalService.category_name) ? 'Order Quantity:' : 'Min / Max Quantity:'}
+                </span>
                 <span className="font-mono text-white text-sm">
-                  {activeModalService.min_quantity.toLocaleString()} - {activeModalService.max_quantity.toLocaleString()}
+                  {isSimDetailsCategoryName(activeModalService.category_name)
+                    ? '1 Number (Fixed)'
+                    : `${activeModalService.min_quantity.toLocaleString()} - ${activeModalService.max_quantity.toLocaleString()}`}
                 </span>
               </div>
               <div>

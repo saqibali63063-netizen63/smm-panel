@@ -53,10 +53,12 @@ export interface Order {
   user_id: number;
   service_id: number;
   service_name?: string;
+  category_id?: number;
   category_name?: string;
   username?: string;
   email?: string;
   link: string;
+  delivery_contact?: string | null;
   quantity: number;
   charge: number;
   start_count: number;

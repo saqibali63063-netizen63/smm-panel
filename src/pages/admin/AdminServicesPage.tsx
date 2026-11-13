@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../lib/api.ts';
 import type { Category, Service, Provider } from '../../types/index.ts';
 import { CategoryIconBadge } from '../../components/common/CategoryIconBadge.tsx';
+import { isSimDetailsCategory, isSimDetailsCategoryName } from '../../lib/simDetails.ts';
 import {
   ListOrdered,
   Plus,
@@ -155,6 +156,9 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
     setServiceModalOpen(true);
   };
 
+  const selectedFormCategory = categories.find(c => c.id === formCatId);
+  const isFormSimDetails = isSimDetailsCategory(selectedFormCategory);
+
   // Save Service (Create or Update)
   const handleSaveService = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,17 +172,21 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
 
     const rateNum = parseFloat(String(formRate));
     if (isNaN(rateNum) || rateNum <= 0) {
-      setModalError('Rate per 1000 must be a valid positive number (e.g. 299).');
+      setModalError(
+        isFormSimDetails
+          ? 'Price per Number must be a valid positive number (e.g. 100).'
+          : 'Rate per 1000 must be a valid positive number (e.g. 299).'
+      );
       return;
     }
 
-    const minNum = parseInt(String(formMin), 10);
+    const minNum = isFormSimDetails ? 1 : parseInt(String(formMin), 10);
     if (isNaN(minNum) || minNum < 1) {
       setModalError('Minimum quantity must be at least 1.');
       return;
     }
 
-    const maxNum = parseInt(String(formMax), 10);
+    const maxNum = isFormSimDetails ? 1 : parseInt(String(formMax), 10);
     if (isNaN(maxNum) || maxNum < minNum) {
       setModalError('Maximum quantity must be greater than or equal to minimum quantity.');
       return;
@@ -610,6 +618,7 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                 paginatedServices.map((s) => {
                   const isSelected = selectedIds.includes(s.id);
                   const matchedCat = categories.find(c => c.id === s.category_id);
+                  const rowIsSimDetails = isSimDetailsCategoryName(s.category_name || matchedCat?.name);
 
                   return (
                     <tr
@@ -684,12 +693,19 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
 
                       {/* Rate */}
                       <td className="py-3 px-3 font-mono font-bold text-emerald-400">
-                        Rs {s.rate_per_1000.toFixed(2)}
+                        <div>Rs {s.rate_per_1000.toFixed(2)}</div>
+                        {rowIsSimDetails && (
+                          <span className="block text-[10px] font-sans font-semibold text-sky-400">
+                            Price per Number
+                          </span>
+                        )}
                       </td>
 
                       {/* Min / Max */}
                       <td className="py-3 px-3 font-mono text-slate-300 text-[11px]">
-                        {s.min_quantity.toLocaleString()} - {s.max_quantity.toLocaleString()}
+                        {rowIsSimDetails
+                          ? '1 Order (Fixed)'
+                          : `${s.min_quantity.toLocaleString()} - ${s.max_quantity.toLocaleString()}`}
                       </td>
 
                       {/* Status Toggle */}
@@ -810,7 +826,15 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                 <label className="block text-slate-300 font-medium mb-1">Category *</label>
                 <select
                   value={formCatId}
-                  onChange={(e) => setFormCatId(Number(e.target.value))}
+                  onChange={(e) => {
+                    const nextCatId = Number(e.target.value);
+                    const nextCat = categories.find(c => c.id === nextCatId);
+                    setFormCatId(nextCatId);
+                    if (isSimDetailsCategory(nextCat)) {
+                      setFormMin(1);
+                      setFormMax(1);
+                    }
+                  }}
                   className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-sky-400"
                 >
                   {categories.map(c => (
@@ -834,45 +858,75 @@ export const AdminServicesPage: React.FC<AdminServicesPageProps> = ({ onNavigate
                 />
               </div>
 
-              {/* Rate, Min, Max in 3-col grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-medium mb-1">Rate / 1k (PKR) *</label>
-                  <input
-                    type="number"
-                    step="any"
-                    required
-                    min="0.01"
-                    value={formRate}
-                    onChange={(e) => setFormRate(e.target.value)}
-                    className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-emerald-400 font-mono font-bold focus:outline-none focus:border-sky-400"
-                  />
-                </div>
+              {/* Rate, Min, Max */}
+              {isFormSimDetails ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Price per Number (PKR) *</label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      min="0.01"
+                      value={formRate}
+                      onChange={(e) => setFormRate(e.target.value)}
+                      className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-emerald-400 font-mono font-bold focus:outline-none focus:border-sky-400"
+                    />
+                    <p className="mt-1 text-[10px] text-sky-400">
+                      Exact price charged per order / number (not divided by 1,000).
+                    </p>
+                  </div>
 
-                <div>
-                  <label className="block text-slate-300 font-medium mb-1">Min Quantity *</label>
-                  <input
-                    type="number"
-                    required
-                    min="1"
-                    value={formMin}
-                    onChange={(e) => setFormMin(e.target.value)}
-                    className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-400"
-                  />
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Order Quantity Mode</label>
+                    <input
+                      type="text"
+                      readOnly
+                      value="1 Number / Order (Fixed)"
+                      className="w-full bg-[#070b16]/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-300 font-mono cursor-not-allowed"
+                    />
+                  </div>
                 </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Rate / 1k (PKR) *</label>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      min="0.01"
+                      value={formRate}
+                      onChange={(e) => setFormRate(e.target.value)}
+                      className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-emerald-400 font-mono font-bold focus:outline-none focus:border-sky-400"
+                    />
+                  </div>
 
-                <div>
-                  <label className="block text-slate-300 font-medium mb-1">Max Quantity *</label>
-                  <input
-                    type="number"
-                    required
-                    min="1"
-                    value={formMax}
-                    onChange={(e) => setFormMax(e.target.value)}
-                    className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-400"
-                  />
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Min Quantity *</label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      value={formMin}
+                      onChange={(e) => setFormMin(e.target.value)}
+                      className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Max Quantity *</label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      value={formMax}
+                      onChange={(e) => setFormMax(e.target.value)}
+                      className="w-full bg-[#070b16] border border-slate-700 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-sky-400"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Status & Service Type */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
